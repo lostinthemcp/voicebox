@@ -24,7 +24,14 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .side-right #body, .side-right #msgrow { flex-direction: row-reverse; }
 
 #msgrow { display: flex; gap: var(--gap); height: 14vh; flex: 0 0 auto; }
-#speak { width: 22vw; min-width: 230px; font-size: 2.6rem; }
+#speak { width: 22vw; min-width: 230px; font-size: 2.6rem; position: relative; }
+/* waiting for the voice: a small pulsing "speaking..." so nobody taps again thinking it is broken */
+.waiting #speak::after { content: "speaking\2026"; position: absolute; left: 0; right: 0; bottom: 0.3em; font-size: 1.1rem; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+#battery { flex: 0 0 auto; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 0.3em; font-size: 2rem; font-weight: bold; color: #fff; border: 3px solid #444; border-radius: 12px; white-space: nowrap; line-height: 1.1; }
+#battery .plug { font-size: 1.4rem; }
+#battery[hidden] { display: none; }
+#battery.low { background: #c00000; border-color: #ff5a3c; }
 .speak { background: var(--accent); color: #000; border-color: var(--accent); }
 .speak:active { background: #fff; color: #000; }
 #msg { flex: 1; min-width: 0; background: var(--panel); border: 3px solid var(--accent); border-radius: 12px; font-size: 2.4rem; line-height: 1.2; padding: 0.2em 0.4em; overflow-y: auto; touch-action: pan-y; display: flex; flex-direction: column; word-break: break-word; }

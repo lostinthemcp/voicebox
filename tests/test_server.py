@@ -507,6 +507,45 @@ class SpeechTest(Base):
             self.assertNotEqual(len(wav), fake_len, text)
 
 
+class WorkerTest(Base):
+    """The fast Piper worker (faked: no real model needed) and the battery reading."""
+
+    def test_slow_piper_worker_still_answers(self):
+        pdir = os.path.join(self.home, "piper")
+        os.makedirs(pdir)
+        pathlib.Path(pdir, "en_US-ryan-medium.onnx").write_text("fake")  # no piper program: worker only
+        os.makedirs(os.path.join(self.home, "kokoro", "venv", "bin"))
+        os.symlink(sys.executable, os.path.join(self.home, "kokoro", "venv", "bin", "python3"))
+        worker = os.path.join(self.home, "fake_piper.py")
+        pathlib.Path(worker).write_text(FAKE_WORKER.replace("time.sleep(5)", "time.sleep(6)").replace('"slow" in', '"zzslow" in'))
+        self.extra_env = {"VOICEBOX_PIPER_WORKER": worker}
+        self.start()
+        t = time.time()
+        code, wav = self.req("/speak", {"text": "hi zzslow", "rate": 1}, raw=True)  # not in any default phrase
+        took = time.time() - t
+        self.assertEqual(code, 200)
+        self.assertEqual(len(wav), 44 + 4800)  # the worker's answer, after its 6 s
+        self.assertGreater(took, 5.5)
+        code, wav = self.req("/speak", {"text": "hi zzslow", "rate": 1}, raw=True)
+        self.assertEqual((code, len(wav)), (200, 44 + 4800))  # now from the disk cache
+        log = pathlib.Path(self.home, "speak.log").read_text().splitlines()
+        self.assertRegex(log[-2], r" +[6-9]\d{3} ms 200 piper en_US-ryan-medium chars=9$")
+        self.assertIn("ms 200 cache en_US-ryan-medium", log[-1])
+
+    def test_battery(self):
+        power = os.path.join(self.home, "power")
+        os.makedirs(os.path.join(power, "AC"))
+        self.extra_env = {"VOICEBOX_POWER_DIR": power}
+        self.start()
+        self.assertEqual(self.req("/battery")[1], {})  # no battery: the page hides it
+        os.makedirs(os.path.join(power, "BAT1"))
+        pathlib.Path(power, "BAT1", "capacity").write_text("17\n")
+        pathlib.Path(power, "BAT1", "status").write_text("Discharging\n")
+        self.assertEqual(self.req("/battery")[1], {"percent": 17, "status": "Discharging", "plugged": False})
+        pathlib.Path(power, "BAT1", "status").write_text("Charging\n")
+        self.assertTrue(self.req("/battery")[1]["plugged"])
+
+
 class RepoCopyTest(Base):
     def test_no_update_from_repo_checkout(self):
         self.start()  # server.py run from the repo, not ~/.local/share/voicebox/app

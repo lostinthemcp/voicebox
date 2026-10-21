@@ -34,8 +34,11 @@ PIPER_DIR = os.path.join(HOME, "piper")
 PIPER_BIN = os.path.join(PIPER_DIR, "piper", "piper")
 PIPER_DEFAULT = "en_US-ryan-medium"  # the voice until the family picks another
 KOKORO_DIR = os.path.join(HOME, "kokoro")
-KOKORO_PY = os.path.join(KOKORO_DIR, "venv", "bin", "python3")
+VENV_PY = os.path.join(KOKORO_DIR, "venv", "bin", "python3")  # one venv (made by install.sh) for Kokoro and Piper
 KOKORO_WORKER = os.environ.get("VOICEBOX_KOKORO_WORKER") or os.path.join(APP, "kokoro_worker.py")
+PIPER_WORKER = os.environ.get("VOICEBOX_PIPER_WORKER") or os.path.join(APP, "piper_worker.py")
+SPEAK_LOG = os.path.join(HOME, "speak.log")
+POWER_DIR = os.environ.get("VOICEBOX_POWER_DIR", "/sys/class/power_supply")
 KOKORO_FILES = {"kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
                 "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"}
 CACHE = os.path.join(HOME, "cache")
@@ -233,12 +236,18 @@ def voice_table(path=os.path.join(APP, "voices.txt")):
     return out
 
 
+def piper_worker_ready():
+    return os.path.exists(VENV_PY) and os.path.exists(PIPER_WORKER)
+
+
 def piper_voices():
-    return sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(PIPER_DIR, "*.onnx"))) if os.path.exists(PIPER_BIN) else []
+    if not (os.path.exists(PIPER_BIN) or piper_worker_ready()):
+        return []
+    return sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(PIPER_DIR, "*.onnx")))
 
 
 def kokoro_ready():
-    return os.path.exists(KOKORO_PY) and os.path.exists(KOKORO_WORKER) \
+    return os.path.exists(VENV_PY) and os.path.exists(KOKORO_WORKER) \
         and all(os.path.exists(os.path.join(KOKORO_DIR, f)) for f in KOKORO_FILES)
 
 
@@ -259,7 +268,8 @@ def pick_voice(voice):
 
 
 def piper_wav(text, rate, voice, low=False):
-    if voice not in piper_voices():
+    """The piper binary: reloads the model every call (seconds on the Surface). Last resort only."""
+    if voice not in piper_voices() or not os.path.exists(PIPER_BIN):
         return None
     with piper_lock:  # one Piper at a time: rapid taps must not swamp the small CPU
         r = subprocess.run(
@@ -272,11 +282,12 @@ def piper_wav(text, rate, voice, low=False):
     return r.stdout
 
 
-class KokoroWorker:
-    """ONE long-lived Kokoro process (the model loads once), one render at a time. A render that
+class Worker:
+    """ONE long-lived speech process (models load once), one render at a time. A render that
     outlives the caller's wait still finishes and lands in the disk cache for next time."""
 
-    def __init__(self):
+    def __init__(self, name, script, folder, ready):
+        self.name, self.script, self.folder, self.ready = name, script, folder, ready
         self.proc = None
         self.busy = threading.Lock()  # held from the request until the worker answers (or dies)
         self.answer = None
@@ -297,13 +308,13 @@ class KokoroWorker:
             ev.set()
             self.busy.release()
 
-    def render(self, text, voice, speed, out, wait):
-        """'ok' (out written), 'busy', 'slow' (still running) or 'down'."""
-        if not kokoro_ready():
+    def render(self, text, voice, speed, out, wait, queue=0.0):
+        """'ok' (out written), 'busy' (another render for `queue` s), 'slow' (still running) or 'down'."""
+        if not self.ready():
             return "down"
         if self.busy.locked() and self.proc and time.time() - self.since > 120:
             self.proc.kill()  # stuck: its reader frees the slot
-        if not self.busy.acquire(blocking=False):
+        if not (self.busy.acquire(timeout=queue) if queue else self.busy.acquire(blocking=False)):
             return "busy"
         ev = threading.Event()
         self.answer, self.since = ev, time.time()  # from here on, _finish() is the only way the slot is freed
@@ -312,13 +323,13 @@ class KokoroWorker:
                 if time.time() - self.started < 60:
                     raise OSError("worker died less than a minute ago")  # no restart storm on a broken install
                 self.started = time.time()
-                self.proc = subprocess.Popen([KOKORO_PY, KOKORO_WORKER, KOKORO_DIR], stdin=subprocess.PIPE,
+                self.proc = subprocess.Popen([VENV_PY, self.script, self.folder], stdin=subprocess.PIPE,
                                              stdout=subprocess.PIPE, text=True, bufsize=1)
                 threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
             self.proc.stdin.write(json.dumps({"text": text, "voice": voice, "speed": speed, "out": out}) + "\n")
             self.proc.stdin.flush()
         except Exception as e:
-            sys.stderr.write("kokoro: %s\n" % e)
+            sys.stderr.write("%s worker: %s\n" % (self.name, e))
             self._finish()  # a no-op if the reader already freed it
             return "down"
         if not ev.wait(wait):
@@ -326,7 +337,8 @@ class KokoroWorker:
         return "ok" if os.path.exists(out) else "down"
 
 
-kokoro = KokoroWorker()
+kokoro = Worker("kokoro", KOKORO_WORKER, KOKORO_DIR, kokoro_ready)
+piper = Worker("piper", PIPER_WORKER, PIPER_DIR, piper_worker_ready)
 
 
 def cache_path(voice, text, rate):
@@ -378,14 +390,34 @@ def prune_cache():
             pass
 
 
+def piper_say(text, rate, voice, path, wait, queue=5.0, low=False):
+    """(wav, how) with Piper: the long-lived worker; the binary only if the worker is missing or stuck."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError:
+        pass
+    if voice in piper_voices():
+        r = piper.render(text, voice, rate, path, wait, queue)
+        if r == "ok":
+            wav = read_cache(path)
+            if wav:
+                return wav, "piper"
+        if r == "slow":
+            return None, "piper-slow"  # still working; a second Piper would only slow it down more
+    wav = piper_wav(text, rate, voice, low)
+    if wav:
+        write_cache(path, wav)
+    return wav, "piper-binary"
+
+
 def speak(text, rate, voice, wait):
-    """WAV bytes or None. Disk cache first; Kokoro if chosen and done within `wait` s; else Piper (Ryan)."""
+    """(wav or None, how). Disk cache first; Kokoro if chosen and done within `wait` s; else Piper (Ryan)."""
     rate = min(max(float(rate or 1.0), 0.5), 2.0)
     voice = pick_voice(voice) or PIPER_DEFAULT  # no engine at all: the disk cache may still have it
     path = cache_path(voice, text, rate)
     wav = read_cache(path)
     if wav:
-        return wav
+        return wav, "cache " + voice
     if voice.startswith("kokoro-"):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -394,17 +426,35 @@ def speak(text, rate, voice, wait):
         if kokoro.render(text, voice[7:], rate, path, wait) == "ok":
             wav = read_cache(path)
             if wav:
-                return wav
+                return wav, "kokoro " + voice
         # too slow or down: Piper answers now, and the Kokoro render still lands in the cache for next time
         voice = PIPER_DEFAULT if PIPER_DEFAULT in piper_voices() else (piper_voices() or [PIPER_DEFAULT])[0]
         path = cache_path(voice, text, rate)
         wav = read_cache(path)
         if wav:
-            return wav
-    wav = piper_wav(text, rate, voice)
-    if wav:
-        write_cache(path, wav)
-    return wav
+            return wav, "cache " + voice
+    wav, how = piper_say(text, rate, voice, path, 15.0)
+    return wav, how + " " + voice
+
+
+log_lock = threading.Lock()
+log_count = [0]
+
+
+def log_speak(line):
+    """speak.log: one line per /speak with the time it took (the last 500 lines), for Joe via RustDesk."""
+    try:
+        with log_lock:
+            with open(SPEAK_LOG, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            log_count[0] += 1
+            if log_count[0] % 50 == 1:
+                with open(SPEAK_LOG, encoding="utf-8") as f:
+                    lines = f.readlines()
+                if len(lines) > 500:
+                    write_atomic(SPEAK_LOG, "".join(lines[-500:]))
+    except OSError:
+        pass
 
 
 # ---------- pre-render: every phrase, in the chosen voice, on disk ----------
@@ -420,6 +470,8 @@ def wake_prerender(d):
     if key != prep_key[0]:
         prep_key[0] = key
         prep_wake.set()
+
+
 last_live = [0.0]  # time of the last tap; pre-render steps aside for it
 
 
@@ -456,10 +508,9 @@ def prerender_once():
                     prep["error"] = "The %s voice is not working; Ryan is used." % v[7:]
                     return
             else:
-                wav = piper_wav(t, rate, v, low=True)
+                wav, _ = piper_say(t, rate, v, path, 60.0, queue=30.0, low=True)
                 if not wav:
                     return
-                write_cache(path, wav)
             break
         prep.update(done=i + 1, error="")
     prune_cache()
@@ -474,6 +525,20 @@ def prerender_loop():
         except Exception as e:
             sys.stderr.write("pre-render: %r\n" % e)
             time.sleep(5)
+
+
+def battery():
+    """{"percent", "status"} of the first battery, or {} when there is none (then the page hides it)."""
+    for b in sorted(glob.glob(os.path.join(POWER_DIR, "BAT*"))):
+        try:
+            with open(os.path.join(b, "capacity")) as f:
+                pct = max(0, min(100, int(f.read().strip())))
+            with open(os.path.join(b, "status")) as f:
+                status = f.read().strip()  # Charging, Discharging, Full, Not charging
+        except (OSError, ValueError):
+            continue
+        return {"percent": pct, "status": status, "plugged": status != "Discharging"}
+    return {}
 
 
 def kill_browser():
@@ -494,7 +559,7 @@ VOICES_URL = os.environ.get("VOICEBOX_VOICES_URL", "https://huggingface.co/rhass
 MAX_TARBALL = 20 * 1024 * 1024
 MAX_UNPACKED = 60 * 1024 * 1024
 MAX_VOICE = 300 * 1024 * 1024
-APP_FILES = ("server.py", "kiosk.sh", "kokoro_worker.py", "static", "voices.txt")
+APP_FILES = ("server.py", "kiosk.sh", "kokoro_worker.py", "piper_worker.py", "static", "voices.txt")
 REQUIRED = ("server.py", "kiosk.sh", "static/index.html", "static/app.js")
 KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 MAX_KOKORO = 400 * 1024 * 1024
@@ -851,6 +916,8 @@ class Handler(SimpleHTTPRequestHandler):
                                     "size": os.path.getsize(b)} for b in list_backups()])
         if self.path == "/voices":
             return self.send_json(voices())
+        if self.path == "/battery":
+            return self.send_json(battery())
         if self.path == "/prepare":
             return self.send_json(dict(prep))
         if self.path == "/version":
@@ -878,12 +945,14 @@ class Handler(SimpleHTTPRequestHandler):
             text = str(req.get("text") or "").strip()[:1000]
             if not text:
                 return self.send_json({"error": "no text"}, 400)
-            last_live[0] = time.time()
+            last_live[0] = t0 = time.time()
             try:  # Kokoro gets a share of the page's timeout; then Piper answers instead
-                wav = speak(text, req.get("rate"), str(req.get("voice") or ""), min(8.0, 1.5 + 0.03 * len(text)))
+                wav, how = speak(text, req.get("rate"), str(req.get("voice") or ""), min(8.0, 1.5 + 0.03 * len(text)))
             except Exception as e:
-                sys.stderr.write("piper failed: %s\n" % e)
-                wav = None
+                sys.stderr.write("speech failed: %r\n" % e)
+                wav, how = None, "error %r" % e
+            log_speak("%s %6d ms %s %s chars=%d" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                   (time.time() - t0) * 1000, 200 if wav else 503, how, len(text)))
             if not wav:
                 return self.send_json({"error": "piper unavailable"}, 503)
             self.send_response(200)

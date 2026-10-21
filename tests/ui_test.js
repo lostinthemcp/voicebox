@@ -15,8 +15,19 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     page.on("pageerror", (e) => errors.push(String(e)));
     const speaks = [];
     page.on("response", (r) => { if (r.url().endsWith("/speak")) speaks.push(r.status()); });
+    // a battery is shown next to the gear (faked: LOKI has none), and the top bar still fits
+    let bat = { percent: 87, status: "Charging", plugged: true };
+    await page.route("**/battery", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(bat) }));
     await page.goto(URL);
     await page.waitForSelector(".tiles button");
+    await page.waitForSelector("#battery:not([hidden])");
+    assert.strictEqual(await page.textContent("#battery"), "\u{1F50B}87%\u26A1");
+    bat = { percent: 15, status: "Discharging", plugged: false };
+    await page.evaluate(() => showBattery());
+    await page.waitForFunction(() => document.querySelector("#battery").classList.contains("low"));
+    assert.match(await page.textContent("#battery"), /15%PLUG IN$/);
+    const batBox = await page.locator("#battery").boundingBox();
+    assert(batBox.height > 60, "battery too small to read from the bed: " + batBox.height);
     const shot = (n) => page.screenshot({ path: path.join(SHOTS, `${w}x${h}-${n}.png`) });
     const said = (t) => page.waitForFunction((t) => document.querySelector("#lastsaid").textContent.includes(t), t, { timeout: 8000 });
     // a freshly drawn screen ignores taps for 400 ms (double-tap guard), so wait like a person would
@@ -235,6 +246,31 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
 
     assert(speaks.length >= 10 && speaks.every((s) => s === 200), "speak responses: " + speaks);
     console.log(`${w}x${h}: OK (${speaks.length} /speak calls, all 200)`);
+    await page.close();
+  }
+  // a slow voice (6 s, like Piper reloading on the Surface): short typed text still plays, no give-up
+  {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 853 }, hasTouch: true });
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.addInitScript(() => {
+      window.__played = 0; window.__spoken = [];
+      const orig = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () { window.__played++; return orig.call(this); };
+      speechSynthesis.speak = (u) => window.__spoken.push(u.text);
+    });
+    await page.route("**/speak", async (r) => { await new Promise((res) => setTimeout(res, 6000)); await r.continue(); });
+    await page.goto(URL);
+    await page.waitForSelector(".tiles button");
+    await page.evaluate(() => setMsg(""));
+    await page.keyboard.type("hi");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1500);
+    assert(await page.evaluate(() => document.body.classList.contains("waiting")), "no 'speaking...' while waiting");
+    await page.waitForFunction(() => window.__played > 0, null, { timeout: 12000 });
+    assert.deepStrictEqual(await page.evaluate(() => window.__spoken), [], "fell back to the browser voice");
+    assert(!(await page.evaluate(() => document.body.classList.contains("waiting"))), "'speaking...' stuck on");
+    await page.click("#clear");
+    console.log("slow voice: OK");
     await page.close();
   }
   // server down: YES and HELP still speak (browser voice); no voice at all: text shown huge

@@ -17,6 +17,8 @@ cd ~ && wget -qO- https://github.com/lostinthemcp/voicebox/archive/refs/heads/ma
 - **Down one side (left by default):** YES, NO, NOT SURE, **HOLD ON** (orange: says "Hold on. Give me a
   minute, I'm typing."), HOME and HOLD FOR HELP.
   These are on every screen.
+- **Top corner, next to the gear:** the battery (for example 🔋87%⚡ while charging). Under 20% and not
+  charging it turns red and says **PLUG IN**.
 - **Across the top:** a big **SPEAK** button with backspace and CLEAR right next to it, then the message
   he is typing (a long message scrolls).
   If CLEAR was tapped by mistake it turns into **UNDO**. Tap that to get the message back.
@@ -124,7 +126,9 @@ Everything (phrases, names, learned words, history, settings) lives in one file:
 3. If the voice sounds different (more robotic) than usual, the Piper voice is not working and the
    backup voice is being used. Run `bash install.sh` again with internet.
 4. Restart the Surface.
-5. For Joe: `systemctl --user status voicebox` and `journalctl --user -u voicebox` show the server;
+5. While a voice is being made, SPEAK shows a small pulsing "speaking…". It waits up to 20 seconds.
+6. For Joe: `~/.local/share/voicebox/speak.log` has one line per spoken message with how long it took
+   (ms) and which voice/engine answered (last 500 lines). `systemctl --user status voicebox` and `journalctl --user -u voicebox` show the server;
    `~/.local/share/voicebox/kiosk.log` shows the browser loop.
 
 ## Remove
@@ -143,8 +147,10 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
   and the updater download the missing ones.
 - Speech: every answer is cached on disk in `~/.local/share/voicebox/cache/<voice>/` (up to 300 MB, oldest
   removed first), and a low-priority thread pre-renders every phrase in the chosen voice (`GET /prepare` shows
-  progress). Kokoro runs as one long-lived `kokoro_worker.py` (in `~/.local/share/voicebox/kokoro/venv`,
-  2 threads, nice 10). If Kokoro is busy, slow or down, `/speak` answers with Piper Ryan instead.
+  progress). Kokoro runs as one long-lived `kokoro_worker.py` and Piper as one long-lived `piper_worker.py` (models
+  load once; both in `~/.local/share/voicebox/kokoro/venv`); the `piper` program, which reloads the model on
+  every call, is only the last resort. If Kokoro is busy, slow or down, `/speak` answers with Piper Ryan.
+  `GET /battery` reads `/sys/class/power_supply/BAT*`.
 - `static/`: the page (plain HTML, CSS and JS, no build step). `static/words.txt` is the starter word list.
 - `bootguard.sh`: runs before every server start (installed outside `app/`, so updates never replace it);
   rolls back to `app.prev` if an updated server fails 3 starts in a row.
