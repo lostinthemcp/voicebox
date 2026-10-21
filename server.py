@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""VoiceBox local server: static page, Piper speech, and one JSON data file with backups.
+
+Stdlib only. Binds to 127.0.0.1 so nothing outside this machine can reach it.
+"""
+import datetime
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+HOME = os.environ.get("VOICEBOX_HOME") or os.path.expanduser("~/.local/share/voicebox")
+PORT = int(os.environ.get("VOICEBOX_PORT", "8765"))
+STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+DATA = os.path.join(HOME, "data.json")
+BACKUPS = os.path.join(HOME, "backups")
+DAILY = os.path.join(BACKUPS, "daily")
+PIPER_DIR = os.path.join(HOME, "piper")
+PIPER_BIN = os.path.join(PIPER_DIR, "piper", "piper")
+EXIT_FLAG = os.path.join(HOME, "exit-kiosk")
+AI_KEY = os.path.join(HOME, "ai_key")
+KEEP_ROLLING = 200
+KEEP_DAILY_DAYS = 60
+ROLLING_EVERY = datetime.timedelta(minutes=10)
+MAX_BODY = 20 * 1024 * 1024
+
+DEFAULT_DATA = {
+    "version": 1,
+    "categories": [
+        {"id": "needs", "name": "Needs", "phrases": [
+            "I need the bathroom", "I'm thirsty", "I'm hungry", "I'm cold", "I'm hot",
+            "Please reposition me", "I'm tired"]},
+        {"id": "medical", "name": "Medical", "phrases": [
+            "Call the nurse", "I'm in pain", "I can't breathe well", "I'm dizzy",
+            "I'm sick to my stomach", "Something is wrong"]},
+        {"id": "feelings", "name": "Feelings", "phrases": [
+            "I'm frustrated", "Give me a minute", "I'm okay", "Thank you", "I love you",
+            "Let me try again", "Please slow down",
+            "I'm still in here. I understand everything.", "I'm tired, ask me later."]},
+        {"id": "conversation", "name": "Talk", "phrases": [
+            "Good morning", "I agree", "I don't agree", "Tell me more", "Not now",
+            "Please ask me yes or no questions."]},
+        {"id": "people", "name": "People", "phrases": []},
+        {"id": "about", "name": "About me", "phrases": []},
+    ],
+    "words": {},
+    "bigrams": {},
+    "history": [],
+    "draft": "",
+    "settings": {"textSize": 1.0, "rate": 1.0, "voice": "", "side": "left"},
+}
+
+lock = threading.Lock()
+tts_cache = {}  # (text, rate, voice) -> wav bytes; repeated phrases play instantly
+
+
+def valid(d):
+    return (isinstance(d, dict) and isinstance(d.get("categories"), list)
+            and isinstance(d.get("settings", {}), dict))
+
+
+def read_json(path):
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    if not valid(d):
+        raise ValueError("not VoiceBox data")
+    return d
+
+
+def write_atomic(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    dfd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def list_backups():
+    files = glob.glob(os.path.join(BACKUPS, "data-*.json")) + glob.glob(os.path.join(DAILY, "data-*.json"))
+    return sorted(files, key=os.path.getmtime, reverse=True)
+
+
+def backup_current(force=False):
+    """Copy the current data.json into the backup folders before it is replaced."""
+    if not os.path.exists(DATA):
+        return
+    try:
+        read_json(DATA)
+    except Exception:
+        return  # never rotate a corrupt file over good backups
+    os.makedirs(DAILY, exist_ok=True)
+    now = datetime.datetime.now()
+    rolling = sorted(glob.glob(os.path.join(BACKUPS, "data-*.json")))
+    newest = None
+    if rolling:
+        try:
+            newest = datetime.datetime.strptime(os.path.basename(rolling[-1])[5:18], "%Y%m%d-%H%M")
+        except ValueError:
+            newest = None
+    if force or newest is None or now - newest >= ROLLING_EVERY:
+        shutil.copy2(DATA, os.path.join(BACKUPS, now.strftime("data-%Y%m%d-%H%M.json")))
+        rolling = sorted(glob.glob(os.path.join(BACKUPS, "data-*.json")))
+        for old in rolling[:-KEEP_ROLLING]:
+            os.remove(old)
+    daily = os.path.join(DAILY, now.strftime("data-%Y%m%d.json"))
+    if not os.path.exists(daily):
+        shutil.copy2(DATA, daily)
+    cutoff = (now - datetime.timedelta(days=KEEP_DAILY_DAYS)).strftime("data-%Y%m%d.json")
+    for old in glob.glob(os.path.join(DAILY, "data-*.json")):
+        if os.path.basename(old) < cutoff:
+            os.remove(old)
+
+
+def save(d):
+    with lock:
+        os.makedirs(HOME, exist_ok=True)
+        backup_current()
+        write_atomic(DATA, json.dumps(d, ensure_ascii=False))
+
+
+def load():
+    with lock:
+        os.makedirs(HOME, exist_ok=True)
+        try:
+            return read_json(DATA)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            # keep the broken file for a human to look at, then recover
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            shutil.copy2(DATA, DATA + ".corrupt-" + stamp)
+            for b in list_backups():
+                try:
+                    d = read_json(b)
+                except Exception:
+                    continue
+                write_atomic(DATA, json.dumps(d, ensure_ascii=False))
+                sys.stderr.write("data.json was corrupt; restored from %s\n" % b)
+                return d
+        d = json.loads(json.dumps(DEFAULT_DATA))
+        write_atomic(DATA, json.dumps(d))
+        return d
+
+
+def voices():
+    return sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(PIPER_DIR, "*.onnx")))
+
+
+def piper_wav(text, rate, voice):
+    names = voices()
+    if not os.path.exists(PIPER_BIN) or not names:
+        return None
+    if voice not in names:
+        voice = "en_US-ryan-medium" if "en_US-ryan-medium" in names else names[0]
+    rate = min(max(float(rate or 1.0), 0.5), 2.0)
+    key = (text, rate, voice)
+    if key in tts_cache:
+        return tts_cache[key]
+    r = subprocess.run(
+        [PIPER_BIN, "-q", "-m", os.path.join(PIPER_DIR, voice + ".onnx"), "-f", "-",
+         "--length_scale", "%.3f" % (1.0 / rate)],
+        input=text.replace("\n", " ").encode(), capture_output=True, timeout=30)
+    if r.returncode != 0 or r.stdout[:4] != b"RIFF":
+        return None
+    if len(tts_cache) > 300:
+        tts_cache.clear()
+    tts_cache[key] = r.stdout
+    return r.stdout
+
+
+def kill_browser():
+    for args in (["pkill", "-f", "voicebox-profile"], ["flatpak", "kill", "org.chromium.Chromium"]):
+        try:
+            subprocess.run(args, timeout=5, capture_output=True)
+        except Exception:
+            pass
+
+
+class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, directory=STATIC, **kw)
+
+    def log_message(self, fmt, *args):
+        pass  # keep the journal quiet; errors still go to stderr
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
+    def send_json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def local_only(self):
+        # Block other web pages (and DNS rebinding) from poking the local API.
+        host = (self.headers.get("Host") or "").split(":")[0]
+        origin = self.headers.get("Origin")
+        ok_hosts = ("127.0.0.1", "localhost")
+        if host not in ok_hosts:
+            return False
+        if origin and origin.split("//")[-1].split(":")[0] not in ok_hosts:
+            return False
+        return True
+
+    def body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY:
+            raise ValueError("too big")
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def do_GET(self):
+        if not self.local_only():
+            return self.send_error(403)
+        if self.path == "/data":
+            return self.send_json(load())
+        if self.path == "/backups":
+            return self.send_json([{"name": os.path.relpath(b, BACKUPS),
+                                    "time": datetime.datetime.fromtimestamp(os.path.getmtime(b)).strftime("%Y-%m-%d %H:%M"),
+                                    "size": os.path.getsize(b)} for b in list_backups()])
+        if self.path == "/voices":
+            return self.send_json(voices() if os.path.exists(PIPER_BIN) else [])
+        return super().do_GET()
+
+    def do_POST(self):
+        if not self.local_only():
+            return self.send_error(403)
+        try:
+            req = self.body()
+        except Exception:
+            return self.send_json({"error": "bad request"}, 400)
+        if self.path == "/data":
+            if not valid(req):
+                return self.send_json({"error": "invalid data"}, 400)
+            save(req)
+            return self.send_json({"ok": True})
+        if self.path == "/speak":
+            text = str(req.get("text") or "").strip()[:1000]
+            if not text:
+                return self.send_json({"error": "no text"}, 400)
+            try:
+                wav = piper_wav(text, req.get("rate"), str(req.get("voice") or ""))
+            except Exception as e:
+                sys.stderr.write("piper failed: %s\n" % e)
+                wav = None
+            if not wav:
+                return self.send_json({"error": "piper unavailable"}, 503)
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(wav)))
+            self.end_headers()
+            self.wfile.write(wav)
+            return
+        if self.path == "/restore":
+            names = {os.path.relpath(b, BACKUPS): b for b in list_backups()}
+            path = names.get(req.get("name"))
+            if not path:
+                return self.send_json({"error": "no such backup"}, 404)
+            try:
+                d = read_json(path)
+            except Exception:
+                return self.send_json({"error": "backup is damaged"}, 400)
+            with lock:
+                backup_current(force=True)  # the state we are replacing stays recoverable
+                write_atomic(DATA, json.dumps(d, ensure_ascii=False))
+            return self.send_json({"ok": True})
+        if self.path == "/exit-kiosk":
+            os.makedirs(HOME, exist_ok=True)
+            open(EXIT_FLAG, "w").close()
+            self.send_json({"ok": True})
+            threading.Timer(0.5, kill_browser).start()
+            return
+        if self.path == "/ai":
+            # Hook for an optional online helper later. Offline core never depends on it.
+            if not os.path.exists(AI_KEY):
+                return self.send_json({"error": "AI helper not set up"}, 501)
+            return self.send_json({"error": "AI helper not built yet"}, 501)
+        return self.send_error(404)
+
+
+def main():
+    os.makedirs(HOME, exist_ok=True)
+    load()  # recover a corrupt file at startup, not on first tap
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    print("VoiceBox on http://127.0.0.1:%d (data in %s)" % (PORT, HOME), flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
