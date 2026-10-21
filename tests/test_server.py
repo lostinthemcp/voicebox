@@ -75,14 +75,14 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(code, 200)
         names = [c["name"] for c in d["categories"]]
         self.assertIn("Needs", names)
-        self.assertIn("About me", names)
-        d["categories"][4]["phrases"].append("Test Name")
+        self.assertIn("About Me", names)
+        next(c for c in d["categories"] if c["id"] == "people")["phrases"].append("Test Name")
         d["words"]["hello"] = 3
         self.assertEqual(self.req("/data", d)[0], 200)
         self.stop()
         self.start()  # survives restart
         code, d2 = self.req("/data")
-        self.assertIn("Test Name", d2["categories"][4]["phrases"])
+        self.assertIn("Test Name", next(c for c in d2["categories"] if c["id"] == "people")["phrases"])
         self.assertEqual(d2["words"]["hello"], 3)
 
     def test_rejects_bad_data(self):
@@ -148,7 +148,12 @@ class ServerTest(unittest.TestCase):
     def test_foreign_origin_blocked(self):
         self.start()
         self.assertEqual(self.req("/data", {"categories": []}, {"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.req("/data", {"categories": []}, {"Origin": "http://127.0.0.1:1"})[0], 403)
         self.assertEqual(self.req("/data", headers={"Host": "evil.example"})[0], 403)
+        self.assertEqual(self.req("/data", headers={"Host": "127.0.0.1:%d.evil.example" % self.port})[0], 403)
+        self.assertEqual(self.req("/data", {"categories": []}, {"Content-Type": "text/plain"})[0], 403)
+        ok = self.req("/data", headers={"Origin": "http://127.0.0.1:%d" % self.port})
+        self.assertEqual(ok[0], 200)
 
     def test_ai_stub_and_speak_without_piper(self):
         self.start()

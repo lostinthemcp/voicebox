@@ -31,21 +31,28 @@ MAX_BODY = 20 * 1024 * 1024
 DEFAULT_DATA = {
     "version": 1,
     "categories": [
-        {"id": "needs", "name": "Needs", "phrases": [
+        {"id": "needs", "name": "Needs", "icon": "\U0001F964", "phrases": [
             "I need the bathroom", "I'm thirsty", "I'm hungry", "I'm cold", "I'm hot",
             "Please reposition me", "I'm tired"]},
-        {"id": "medical", "name": "Medical", "phrases": [
+        {"id": "medical", "name": "Medical", "icon": "\U0001FA7A", "phrases": [
             "Call the nurse", "I'm in pain", "I can't breathe well", "I'm dizzy",
             "I'm sick to my stomach", "Something is wrong"]},
-        {"id": "feelings", "name": "Feelings", "phrases": [
+        {"id": "staff", "name": "Hospital Staff", "icon": "\U0001F3E5", "phrases": [
+            "Please call my nurse", "When is the doctor coming?", "What is this medicine for?",
+            "Please explain that again, slowly.", "Please call my family", "Please raise the bed",
+            "Please lower the bed", "Please turn the light off", "Please turn the TV on",
+            "Please turn the TV off", "I need suction", "I need my glasses", "What time is it?",
+            "What day is it?", "Am I having a test today?", "I want to talk to the doctor",
+            "Please write it down for me", "Please wash your hands", "I need to rest now"]},
+        {"id": "feelings", "name": "Feelings", "icon": "\u2764\ufe0f", "phrases": [
             "I'm frustrated", "Give me a minute", "I'm okay", "Thank you", "I love you",
             "Let me try again", "Please slow down",
             "I'm still in here. I understand everything.", "I'm tired, ask me later."]},
-        {"id": "conversation", "name": "Talk", "phrases": [
+        {"id": "conversation", "name": "Talk", "icon": "\U0001F4AC", "phrases": [
             "Good morning", "I agree", "I don't agree", "Tell me more", "Not now",
             "Please ask me yes or no questions."]},
-        {"id": "people", "name": "People", "phrases": []},
-        {"id": "about", "name": "About me", "phrases": []},
+        {"id": "people", "name": "People", "icon": "\U0001F46A", "phrases": []},
+        {"id": "about", "name": "About Me", "icon": "\U0001F4CB", "phrases": []},
     ],
     "words": {},
     "bigrams": {},
@@ -205,14 +212,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def local_only(self):
-        # Block other web pages (and DNS rebinding) from poking the local API.
-        host = (self.headers.get("Host") or "").split(":")[0]
-        origin = self.headers.get("Origin")
-        ok_hosts = ("127.0.0.1", "localhost")
-        if host not in ok_hosts:
+    def local_only(self, post=False):
+        # Block other web pages and DNS rebinding: exact Host, exact Origin, JSON only.
+        ok = ("127.0.0.1:%d" % PORT, "localhost:%d" % PORT)
+        if self.headers.get("Host") not in ok:
             return False
-        if origin and origin.split("//")[-1].split(":")[0] not in ok_hosts:
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in tuple("http://" + h for h in ok):
+            return False
+        if post and (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
             return False
         return True
 
@@ -236,7 +244,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
-        if not self.local_only():
+        if not self.local_only(post=True):
             return self.send_error(403)
         try:
             req = self.body()

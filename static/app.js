@@ -5,7 +5,8 @@ const $ = (s) => document.querySelector(s);
 let D = null;               // data from server
 let msg = "";               // the message being built
 let lastCleared = "";       // for CLEAR -> UNDO
-let tab = "abc";
+let screen = "home";
+let page = 0;
 let painLevel = null;
 let kbMode = "abc";
 let skMode = "abc";
@@ -78,7 +79,7 @@ function say(text, { learnIt = true } = {}) {
   if (learnIt) learn(text);
   $("#lastsaid").textContent = "Said: " + text;
   saveSoon();
-  if (tab === "history") renderPanel();
+  if (screen === "history") renderPanel();
 }
 
 // ---------- learning + prediction ----------
@@ -116,6 +117,7 @@ function predict() {
 function renderSuggest() {
   const { part, words } = predict();
   const box = $("#suggest");
+  if (!box) return;
   box.innerHTML = "";
   for (const w of words) {
     const b = document.createElement("button");
@@ -157,7 +159,7 @@ const LAYOUTS = {
   abc: ["qwertyuiop", "asdfghjkl'", "zxcvbnm,"],
   "123": ["1234567890", "-/:;()$&@\"", "!#%+=*?_"],
 };
-function renderKeyboard(box, mode, onKey, onMode) {
+function renderKeyboard(box, mode, onKey, onMode, withSpeak) {
   box.innerHTML = "";
   for (const row of LAYOUTS[mode]) {
     const r = document.createElement("div");
@@ -173,6 +175,7 @@ function renderKeyboard(box, mode, onKey, onMode) {
   r.appendChild(key(" ", "space", onKey, "space"));
   r.appendChild(key(".", ".", onKey));
   r.appendChild(key("?", "?", onKey));
+  if (withSpeak) r.appendChild(key(null, "SPEAK", () => say(msg), "speak"));
   box.appendChild(r);
 }
 function key(val, label, onKey, cls) {
@@ -183,112 +186,105 @@ function key(val, label, onKey, cls) {
   return b;
 }
 
-// ---------- tabs + panels ----------
-function renderTabs() {
-  const nav = $("#tabs");
-  nav.innerHTML = "";
-  const list = [["abc", "ABC"], ...D.categories.map((c) => [c.id, c.name]), ["pain", "Pain"], ["history", "History"]];
-  if (!list.some(([id]) => id === tab)) tab = "abc";
-  for (const [id, name] of list) {
-    const b = document.createElement("button");
-    b.textContent = name;
-    b.className = id === tab ? "on" : "";
-    b.onclick = () => { tab = id; painLevel = null; renderTabs(); renderPanel(); };
-    nav.appendChild(b);
-  }
+// ---------- screens ----------
+// screen: "home" | "keyboard" | "pain" | "history" | a category id
+const SPECIAL = { keyboard: ["⌨️", "Keyboard"], pain: ["\u{1F915}", "Pain"], history: ["\u{1F552}", "History"] };
+function go(s) { screen = s; page = 0; painLevel = null; renderPanel(); }
+function head(p, title, extra = []) {
+  const h = el("div", { class: "head" }, el("h2", { class: "title", text: title }), ...extra);
+  p.appendChild(h);
 }
 function renderPanel() {
   const p = $("#panel");
   p.innerHTML = "";
-  p.scrollTop = 0;
-  if (tab === "abc") {
-    const kb = document.createElement("div");
-    kb.className = "keyboard";
-    p.appendChild(kb);
-    renderKeyboard(kb, kbMode, typeKey, (m) => { kbMode = m; renderPanel(); });
-    return;
-  }
-  if (tab === "pain") return renderPain(p);
-  if (tab === "history") return renderHistory(p);
-  const cat = D.categories.find((c) => c.id === tab);
+  $("#home").classList.toggle("here", screen === "home");
+  if (screen === "home") return renderHome(p);
+  if (screen === "keyboard") return renderKeys(p);
+  if (screen === "pain") return renderPain(p);
+  if (screen === "history") return renderHistory(p);
+  const cat = D.categories.find((c) => c.id === screen);
+  if (!cat) return go("home");
+  const pages = Math.max(1, Math.ceil(cat.phrases.length / 9));
+  page = Math.min(page, pages - 1);
+  const nav = pages > 1 ? [
+    el("button", { text: "◀ Back", onclick: () => { page = (page + pages - 1) % pages; renderPanel(); } }),
+    el("button", { class: "more", text: `More ▶ (${page + 1}/${pages})`, onclick: () => { page = (page + 1) % pages; renderPanel(); } }),
+  ] : [];
+  head(p, (cat.icon ? cat.icon + " " : "") + cat.name, nav);
   if (!cat.phrases.length) {
-    p.innerHTML = '<div class="empty">Nothing here yet. Family: hold the gear (top corner) for 3 seconds to add some.</div>';
+    p.append(el("div", { class: "empty", text: "Nothing here yet. Family: hold the gear (top corner) for 3 seconds to add some." }));
     return;
   }
-  const g = document.createElement("div");
-  g.className = "grid phrases"; // 3 across, ~9 per screen
-  for (const ph of cat.phrases) {
-    const b = document.createElement("button");
-    b.textContent = ph;
-    b.onclick = () => say(ph);
-    g.appendChild(b);
+  const g = el("div", { class: "phrases" }); // 3 x 3 = 9 per page
+  for (const ph of cat.phrases.slice(page * 9, page * 9 + 9)) g.append(el("button", { text: ph, onclick: () => say(ph) }));
+  p.appendChild(g);
+}
+function tileList() {
+  const tiles = [];
+  const special = () => Object.entries(SPECIAL).forEach(([id, [icon, name]]) => tiles.push({ id, icon, name }));
+  let placed = false;
+  for (const c of D.categories) {
+    if (c.id === "about" && !placed) { special(); placed = true; }
+    tiles.push({ id: c.id, icon: c.icon || "⭐", name: c.name });
+  }
+  if (!placed) special();
+  return tiles;
+}
+function renderHome(p) {
+  const g = el("div", { class: "tiles" });
+  const tiles = tileList();
+  g.style.gridTemplateColumns = `repeat(${tiles.length > 10 ? 6 : 5}, 1fr)`;
+  for (const t of tiles) {
+    g.append(el("button", { class: t.id === "keyboard" ? "kbd" : "", "data-tile": t.id, onclick: () => go(t.id) },
+      el("span", { class: "icon", text: t.icon }), el("span", { text: t.name })));
   }
   p.appendChild(g);
+}
+function renderKeys(p) {
+  p.append(el("div", { id: "suggest" }));
+  const kb = el("div", { class: "keyboard" });
+  p.appendChild(kb);
+  renderKeyboard(kb, kbMode, typeKey, (m) => { kbMode = m; renderPanel(); }, true);
+  renderSuggest();
 }
 const PLACES = ["head", "chest", "stomach", "back", "left arm", "right arm", "left leg", "right leg"];
 function renderPain(p) {
-  const t = document.createElement("div");
-  t.className = "title";
-  p.appendChild(t);
-  const g = document.createElement("div");
-  g.className = "pain";
-  p.appendChild(g);
+  const g = el("div", { class: "pain" });
   if (painLevel === null) {
-    t.textContent = "How bad is the pain? (0 = none, 10 = worst)";
+    head(p, "\u{1F915} How bad is the pain? 0 = none, 10 = worst");
     for (let i = 0; i <= 10; i++) {
-      const b = document.createElement("button");
-      b.textContent = i;
+      const b = el("button", { text: String(i), onclick: () => { painLevel = i; renderPanel(); } });
       b.style.background = `hsl(${120 - i * 12}, 85%, 50%)`;
-      b.onclick = () => { painLevel = i; renderPanel(); };
-      g.appendChild(b);
+      g.append(b);
     }
+    p.append(g);
     return;
   }
-  t.textContent = `Pain ${painLevel} out of 10. Where?`;
-  g.classList.add("loc");
   const base = `My pain is ${painLevel} out of 10`;
+  head(p, `Pain ${painLevel} out of 10. Where?`, [el("button", { text: "◀ Back", onclick: () => { painLevel = null; renderPanel(); } })]);
+  g.classList.add("loc");
+  const done = (t) => { say(t); painLevel = null; renderPanel(); };
   for (const place of PLACES) {
-    const b = document.createElement("button");
-    b.textContent = place[0].toUpperCase() + place.slice(1);
+    const b = el("button", { text: place[0].toUpperCase() + place.slice(1), onclick: () => done(`${base}, in my ${place}.`) });
     b.style.color = "#fff";
-    b.onclick = () => { say(`${base}, in my ${place}.`); painLevel = null; renderPanel(); };
-    g.appendChild(b);
+    g.append(b);
   }
-  const just = document.createElement("button");
-  just.textContent = "Just say it";
-  just.className = "speak";
-  just.onclick = () => { say(base + "."); painLevel = null; renderPanel(); };
-  const back = document.createElement("button");
-  back.textContent = "Back";
-  back.style.color = "#fff";
-  back.onclick = () => { painLevel = null; renderPanel(); };
-  g.appendChild(just);
-  g.appendChild(back);
+  g.append(el("button", { class: "speak", text: "Just say the number", onclick: () => done(base + ".") }));
+  p.append(g);
 }
 function renderHistory(p) {
-  if (!D.history.length) { p.innerHTML = '<div class="empty">Nothing said yet.</div>'; return; }
-  const box = document.createElement("div");
-  box.className = "hist";
+  head(p, "\u{1F552} History - tap to say again, ★ to save");
+  if (!D.history.length) { p.append(el("div", { class: "empty", text: "Nothing said yet." })); return; }
+  const box = el("div", { class: "hist" });
   for (const h of D.history.slice(0, 200)) {
-    const row = document.createElement("div");
-    row.className = "hrow";
     const d = new Date(h.t);
-    const when = document.createElement("div");
-    when.className = "when";
     const today = new Date().toDateString() === d.toDateString();
-    when.textContent = (today ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " ") +
+    const when = (today ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " ") +
       d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const s = document.createElement("button");
-    s.className = "say";
-    s.textContent = h.text;
-    s.onclick = () => say(h.text, { learnIt: false });
-    const st = document.createElement("button");
-    st.className = "star";
-    st.textContent = "★";
-    st.setAttribute("aria-label", "Save as phrase");
-    st.onclick = () => pickCategory(h.text);
-    row.append(when, s, st);
-    box.appendChild(row);
+    box.append(el("div", { class: "hrow" },
+      el("div", { class: "when", text: when }),
+      el("button", { class: "say", text: h.text, onclick: () => say(h.text, { learnIt: false }) }),
+      el("button", { class: "star", text: "★", "aria-label": "Save as phrase", onclick: () => pickCategory(h.text) })));
   }
   p.appendChild(box);
 }
@@ -375,7 +371,7 @@ function openSettings() {
   renderSettings();
   renderSKeys();
 }
-function closeSettings() { $("#settings").hidden = true; settingsTarget = null; applySettings(); renderTabs(); renderPanel(); renderMsg(); saveSoon(50); }
+function closeSettings() { $("#settings").hidden = true; settingsTarget = null; applySettings(); renderPanel(); renderMsg(); saveSoon(50); }
 function el(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -425,7 +421,7 @@ async function renderSettings() {
 
   const people = D.categories.find((c) => c.id === "people");
   if (people) {
-    body.append(el("h2", { text: "Family names (People tab)" }));
+    body.append(el("h2", { text: "Family names (People tile)" }));
     let name = "";
     const inp = textInput("", (v) => { name = v; }, "Type a name");
     body.append(el("div", { class: "bar" }, inp, el("button", { text: "Add name", onclick: () => {
@@ -441,7 +437,8 @@ async function renderSettings() {
   body.append(cbar);
   const cat = D.categories.find((c) => c.id === settingsCat);
   if (cat) {
-    body.append(el("div", { class: "bar" }, el("span", { text: "Tab name:" }), textInput(cat.name, (v) => { cat.name = v || cat.name; saveSoon(); })));
+    body.append(el("div", { class: "bar" }, el("span", { text: "Tile name:" }), textInput(cat.name, (v) => { cat.name = v || cat.name; saveSoon(); }),
+      el("span", { text: "Picture:" }), textInput(cat.icon || "", (v) => { cat.icon = v; saveSoon(); }, "emoji")));
     cat.phrases.forEach((ph, i) => {
       const move = (d) => { const j = i + d; if (j < 0 || j >= cat.phrases.length) return; [cat.phrases[i], cat.phrases[j]] = [cat.phrases[j], cat.phrases[i]]; saveSoon(); renderSettings(); };
       body.append(el("div", { class: "row" },
@@ -457,18 +454,18 @@ async function renderSettings() {
     const ci = D.categories.indexOf(cat);
     const moveCat = (d) => { const j = ci + d; if (j < 0 || j >= D.categories.length) return; [D.categories[ci], D.categories[j]] = [D.categories[j], D.categories[ci]]; saveSoon(); renderSettings(); };
     body.append(el("div", { class: "bar" },
-      el("button", { text: "◀ Move tab", onclick: () => moveCat(-1) }),
-      el("button", { text: "Move tab ▶", onclick: () => moveCat(1) }),
-      el("button", { class: "danger", text: `Delete the "${cat.name}" tab`, onclick: () => {
-        if (confirm(`Delete the whole "${cat.name}" tab and its ${cat.phrases.length} phrases? (A backup is kept.)`)) {
+      el("button", { text: "◀ Move tile", onclick: () => moveCat(-1) }),
+      el("button", { text: "Move tile ▶", onclick: () => moveCat(1) }),
+      el("button", { class: "danger", text: `Delete the "${cat.name}" tile`, onclick: () => {
+        if (confirm(`Delete the whole "${cat.name}" tile and its ${cat.phrases.length} phrases? (A backup is kept.)`)) {
           D.categories.splice(ci, 1); settingsCat = D.categories[0] && D.categories[0].id; saveSoon(50); renderSettings();
         }
       } })));
   }
-  const newCat = textInput("", () => {}, "New tab name");
-  body.append(el("div", { class: "bar" }, newCat, el("button", { text: "Add tab", onclick: () => {
+  const newCat = textInput("", () => {}, "New tile name");
+  body.append(el("div", { class: "bar" }, newCat, el("button", { text: "Add tile", onclick: () => {
     const v = newCat.value.trim(); if (!v) return;
-    const c = { id: slug(v), name: v, phrases: [] }; D.categories.push(c); settingsCat = c.id; saveSoon(50); renderSettings();
+    const c = { id: slug(v), name: v, icon: "\u2b50", phrases: [] }; D.categories.push(c); settingsCat = c.id; saveSoon(50); renderSettings();
   } })));
 
   body.append(el("h2", { text: "Data and backups" }));
@@ -510,7 +507,7 @@ async function renderSettings() {
   body.append(el("div", { class: "bar" }, el("button", { class: "danger", text: "Exit to desktop", onclick: async () => {
     if (!confirm("Close VoiceBox and go to the desktop? Use the Start VoiceBox icon to come back.")) return;
     await saveNow();
-    fetch("/exit-kiosk", { method: "POST" }).catch(() => {});
+    fetch("/exit-kiosk", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
   } })));
   body.append(el("div", { class: "small", text: "Tip: tap a box above, then type with the keys below or the keyboard cover." }));
   body.scrollTop = keepScroll;
@@ -519,7 +516,8 @@ function renderSKeys() {
   renderKeyboard($("#skeys"), skMode, (k) => {
     const i = settingsTarget;
     if (!i || !document.body.contains(i)) { toast("Tap a box first"); return; }
-    if (k === "BS") i.value = i.value.slice(0, -1); else i.value += k;
+    if (k === "BS") i.value = i.value.slice(0, -1);
+    else i.value += /(^|[.?!] )$/.test(i.value) ? k.toUpperCase() : k; // names and phrases start with a capital
     i.dispatchEvent(new Event("input"));
   }, (m) => { skMode = m; renderSKeys(); });
   // keep focus on the input so the on-screen keys don't steal it
@@ -528,7 +526,7 @@ function renderSKeys() {
 async function reloadData() {
   D = normalize(await (await fetch("/data")).json());
   applySettings();
-  renderTabs(); renderPanel(); renderMsg();
+  renderPanel(); renderMsg();
   if (!$("#settings").hidden) renderSettings();
 }
 
@@ -563,9 +561,10 @@ async function start() {
   const ls = lsGet("vb-draft");
   msg = ls !== null ? ls : (D.draft || "");
   applySettings();
-  renderTabs(); renderPanel(); renderMsg();
+  renderPanel(); renderMsg();
 
-  $("#speak").onclick = $("#speak2").onclick = () => { unlockAudio(); say(msg); };
+  $("#speak").onclick = () => { unlockAudio(); say(msg); };
+  $("#home").onclick = () => go("home");
   $("#yes").onclick = () => say("Yes");
   $("#no").onclick = () => say("No");
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
@@ -581,7 +580,11 @@ async function start() {
     if (!$("#settings").hidden || !$("#modal").hidden || e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === "Enter") { e.preventDefault(); say(msg); }
     else if (e.key === "Backspace") { e.preventDefault(); typeKey("BS"); }
-    else if (e.key.length === 1) { e.preventDefault(); typeKey(e.key === " " ? " " : e.key); }
+    else if (e.key.length === 1) {
+      e.preventDefault();
+      if (screen !== "keyboard") go("keyboard"); // show the word guesses while he types
+      typeKey(e.key);
+    }
   });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
   document.addEventListener("visibilitychange", () => { if (document.hidden) saveNow(); });
