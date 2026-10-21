@@ -1,7 +1,11 @@
-# Piper voices to install (from huggingface.co/rhasspy/piper-voices, under en/).
-# install.sh and the in-app updater download any that are missing. One per line.
-en_US/ryan/medium/en_US-ryan-medium
-en_US/joe/medium/en_US-joe-medium
-en_US/ryan/high/en_US-ryan-high
-en_US/hfc_male/medium/en_US-hfc_male-medium
-en_US/norman/medium/en_US-norman-medium
+# Voices shown in Settings, in this order:  Friendly name | where it comes from
+# Piper voices: path under huggingface.co/rhasspy/piper-voices/.../en/ (install.sh and the updater download them).
+# Kokoro voices: "kokoro <voice>" (needs the Kokoro engine that install.sh sets up).
+Michael | kokoro am_michael
+Fenrir (deeper) | kokoro am_fenrir
+Puck | kokoro am_puck
+George (British) | kokoro bm_george
+Ryan sharp | en_US/ryan/high/en_US-ryan-high
+Norman | en_US/norman/medium/en_US-norman-medium
+Ryan | en_US/ryan/medium/en_US-ryan-medium
+Joe | en_US/joe/medium/en_US-joe-medium

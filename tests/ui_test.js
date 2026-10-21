@@ -154,6 +154,7 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     assert(await page.isHidden("#settings"), "settings opened too early");
     await page.mouse.down(); await page.waitForTimeout(3300); await page.mouse.up();
     await page.waitForSelector("#settings:not([hidden])");
+    await page.waitForSelector('#sbody button.on:text-is("Ryan")'); // friendly voice names, Ryan until the family picks
     await shot("9-settings");
     // updates (server answers faked here; the real flow is in test_server.py): offer, then a plain failure message
     const fake = (status, obj) => (r) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(obj) });
@@ -224,7 +225,8 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.evaluate(() => { speechSynthesis.getVoices = () => []; });
     await page.waitForTimeout(750);
     await page.click("#no");
-    await page.waitForSelector("#modal:not([hidden]) .bigtext");
+    // the stalled fake voice already put "Yes" up big after 3 s; wait for "No" to replace it (was a race)
+    await page.waitForFunction(() => { const b = document.querySelector("#modal:not([hidden]) .bigtext"); return b && b.textContent === "No"; });
     assert.strictEqual(await page.textContent("#modal .bigtext"), "No");
     await page.screenshot({ path: path.join(SHOTS, "1280x853-11-no-voice.png") });
     await page.click('#modal button:text-is("OK")');

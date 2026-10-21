@@ -211,7 +211,7 @@ class ServerTest(Base):
         self.assertEqual(code, 200)
         self.assertEqual(wav[:4], b"RIFF")
         self.assertGreater(len(wav), 20000)
-        self.assertIn("en_US-ryan-medium", self.req("/voices")[1])
+        self.assertIn({"id": "en_US-ryan-medium", "name": "Ryan"}, self.req("/voices")[1])
 
 
 def tree(d):
@@ -232,7 +232,7 @@ class UpdateTest(Base):
         super().setUp()
         self.app = os.path.join(self.home, "app")
         os.makedirs(self.app)
-        for f in ("server.py", "kiosk.sh"):
+        for f in ("server.py", "kiosk.sh", "kokoro_worker.py"):
             shutil.copy2(os.path.join(ROOT, f), self.app)
         shutil.copytree(os.path.join(ROOT, "static"), os.path.join(self.app, "static"))
         pathlib.Path(self.app, "VERSION").write_text(self.OLD + "\n")
@@ -257,7 +257,8 @@ class UpdateTest(Base):
         """A GitHub-like tarball of the repo with index.html marked; change/extra tweak it."""
         files = {"server.py": pathlib.Path(ROOT, "server.py").read_bytes(),
                  "kiosk.sh": pathlib.Path(ROOT, "kiosk.sh").read_bytes(),
-                 "voices.txt": b"# test\nen_US/fake/medium/en_US-fake-medium\n../../evil\n"}
+                 "kokoro_worker.py": pathlib.Path(ROOT, "kokoro_worker.py").read_bytes(),
+                 "voices.txt": b"# test\nFake | en_US/fake/medium/en_US-fake-medium\nBad | ../../evil\n"}
         for f in os.listdir(os.path.join(ROOT, "static")):
             files["static/" + f] = pathlib.Path(ROOT, "static", f).read_bytes()
         files["static/index.html"] += b"<!-- v2 -->"
@@ -300,7 +301,7 @@ class UpdateTest(Base):
         code, j = self.req("/update/install", {})
         self.assertEqual(code, 200, j)
         self.assertEqual(j["version"], self.NEW)
-        self.assertEqual(j["notes"], ["New voice: en_US-fake-medium"])
+        self.assertEqual(j["notes"], ["New voice: Fake"])
         self.wait_exit()
         self.assertIn(b"<!-- v2 -->", pathlib.Path(self.app, "static/index.html").read_bytes())
         self.assertEqual(pathlib.Path(self.app, "VERSION").read_text().strip(), self.NEW)
@@ -376,6 +377,92 @@ class UpdateTest(Base):
         for bad in ("http://github.com/x", "https://evil.example/x", "https://github.com.evil.example/x",
                     "https://evilhf.co/x", "file:///etc/passwd"):
             self.assertFalse(server.host_ok(bad), bad)
+
+
+FAKE_WORKER = """import json, os, sys, time, wave
+print(json.dumps({"ready": True}), flush=True)
+for line in sys.stdin:
+    r = json.loads(line)
+    if "crash" in r["text"]:
+        sys.exit(1)
+    if "slow" in r["text"]:
+        time.sleep(5)
+    with wave.open(r["out"] + ".tmp", "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(bytes(4800))
+    os.replace(r["out"] + ".tmp", r["out"])
+    print(json.dumps({"ok": True}), flush=True)
+"""
+SMALL = {"categories": [{"id": "people", "name": "People", "phrases": ["Alpha one", "Bravo two"]}],
+         "settings": {"voice": "kokoro-am_michael", "rate": 1.0}}
+
+
+@unittest.skipUnless(os.path.exists(os.path.join(REAL_PIPER, "piper", "piper")), "Piper not downloaded")
+class SpeechTest(Base):
+    """Disk cache, pre-render, and Kokoro with a fake worker (the real model is too big for a unit test)."""
+
+    def setUp(self):
+        super().setUp()
+        os.symlink(REAL_PIPER, os.path.join(self.home, "piper"))
+
+    def cached(self, voice):
+        return glob.glob(os.path.join(self.home, "cache", voice, "*.wav"))
+
+    def wait_prepared(self):
+        for _ in range(300):
+            p = self.req("/prepare")[1]
+            if p["total"] and p["done"] == p["total"]:
+                return p
+            time.sleep(0.1)
+        self.fail("pre-render did not finish: %s" % p)
+
+    def test_disk_cache_and_fallback_without_kokoro(self):
+        self.start()
+        self.assertEqual(self.req("/data", SMALL)[0], 200)  # Michael picked, but Kokoro is not installed
+        self.assertFalse([v for v in self.req("/voices")[1] if v["id"].startswith("kokoro-")])
+        p = self.wait_prepared()
+        self.assertEqual((p["voice"], p["total"]), ("en_US-ryan-medium", 6))  # 4 big buttons + 2 phrases, in Ryan
+        self.assertEqual(len(self.cached("en_US-ryan-medium")), 6)
+        code, wav = self.req("/speak", {"text": "Something new.", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)
+        self.assertEqual((code, wav[:4]), (200, b"RIFF"))
+        self.assertEqual(len(self.cached("en_US-ryan-medium")), 7)
+        self.stop()
+        os.remove(os.path.join(self.home, "piper"))  # no Piper at all now: the disk cache still speaks
+        self.start()
+        self.assertEqual(self.req("/speak", {"text": "Alpha one", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)[0], 200)
+        self.assertEqual(self.req("/speak", {"text": "Yes", "rate": 1}, raw=True)[0], 200)
+        self.assertEqual(self.req("/speak", {"text": "Never said before", "rate": 1})[0], 503)
+
+    def test_kokoro_worker(self):
+        kdir = os.path.join(self.home, "kokoro")
+        os.makedirs(os.path.join(kdir, "venv", "bin"))
+        os.symlink(sys.executable, os.path.join(kdir, "venv", "bin", "python3"))
+        for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+            pathlib.Path(kdir, f).write_text("fake")
+        worker = os.path.join(self.home, "fake_worker.py")
+        pathlib.Path(worker).write_text(FAKE_WORKER)
+        self.extra_env = {"VOICEBOX_KOKORO_WORKER": worker}
+        self.start()
+        self.assertIn({"id": "kokoro-am_michael", "name": "Michael"}, self.req("/voices")[1])
+        self.req("/data", SMALL)
+        p = self.wait_prepared()
+        self.assertEqual((p["voice"], p["total"]), ("kokoro-am_michael", 10))  # + Ryan copies of the 4 big buttons
+        self.assertEqual(len(self.cached("kokoro-am_michael")), 6)
+        self.assertEqual(len(self.cached("en_US-ryan-medium")), 4)
+        fake_len = 44 + 4800
+        self.assertEqual(len(self.req("/speak", {"text": "Alpha one", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)[1]), fake_len)
+        # too slow: Piper answers within the wait, and the Kokoro version lands in the cache afterwards
+        t = time.time()
+        code, wav = self.req("/speak", {"text": "slow one", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)
+        self.assertEqual(code, 200)
+        self.assertLess(time.time() - t, 4.5)
+        self.assertNotEqual(len(wav), fake_len)
+        time.sleep(4)
+        self.assertEqual(len(self.req("/speak", {"text": "slow one", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)[1]), fake_len)
+        # the worker dies: Piper still answers, every time
+        for text in ("crash now", "after the crash"):
+            code, wav = self.req("/speak", {"text": text, "rate": 1, "voice": "kokoro-am_michael"}, raw=True)
+            self.assertEqual((code, wav[:4]), (200, b"RIFF"), text)
+            self.assertNotEqual(len(wav), fake_len, text)
 
 
 class RepoCopyTest(Base):

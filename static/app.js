@@ -63,26 +63,37 @@ function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return n
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode etc. */ } }
 
 // ---------- speech ----------
-async function play(text) {
+function fetchWav(text) {
+  const s = settings(), ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), Math.min(15000, 4000 + 40 * text.length)); // long text takes longer
+  return fetch("/speak", { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, rate: s.rate, voice: s.voice }) })
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); })
+    .finally(() => clearTimeout(t));
+}
+// split: typed text is spoken a sentence at a time, the next one rendering while this one plays
+async function play(text, split = false) {
   const my = ++speechSeq;
   if (audio) { audio.pause(); audio = null; }
   try { speechSynthesis.cancel(); } catch (e) { /* none */ }
-  const s = settings();
-  try {
-    const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), Math.min(15000, 4000 + 40 * text.length)); // long text takes Piper longer
-    const r = await fetch("/speak", { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, rate: s.rate, voice: s.voice }) });
-    clearTimeout(t);
-    if (!r.ok) throw new Error(r.status);
-    const blob = await r.blob();
-    if (my !== speechSeq) return; // he already tapped something newer
-    const url = URL.createObjectURL(blob);
-    audio = new Audio(url);
-    audio.onended = () => URL.revokeObjectURL(url);
-    await audio.play();
-  } catch (e) {
-    if (my === speechSeq) fallbackSpeak(text);
+  const parts = split ? (text.match(/[^.!?]+[.!?]*/g) || [text]).map((x) => x.trim()).filter(Boolean) : [text];
+  let next = fetchWav(parts[0]);
+  for (let i = 0; i < parts.length; i++) {
+    try {
+      const blob = await next;
+      if (my !== speechSeq) return; // he already tapped something newer
+      if (i + 1 < parts.length) { next = fetchWav(parts[i + 1]); next.catch(() => {}); }
+      const url = URL.createObjectURL(blob);
+      audio = new Audio(url);
+      const ended = new Promise((res) => { audio.onended = audio.onerror = res; });
+      await audio.play();
+      await ended;
+      URL.revokeObjectURL(url);
+      if (my !== speechSeq) return;
+    } catch (e) {
+      if (my === speechSeq) fallbackSpeak(parts.slice(i).join(" "));
+      return;
+    }
   }
 }
 function fallbackSpeak(text) {
@@ -110,13 +121,13 @@ function showBig(text) {
     el("button", { class: "speak", text: "OK", onclick: () => { m.hidden = true; } })));
   m.hidden = false;
 }
-function say(text, { learnIt = true } = {}) {
+function say(text, { learnIt = true, split = false } = {}) {
   text = (text || "").trim();
   if (!text) return;
   const now = performance.now();
   if (text === lastSpoken.text && now - lastSpoken.at < 700) return; // shaky double tap
   lastSpoken = { text, at: now };
-  play(text);
+  play(text, split);
   $("#lastsaid").textContent = "Said: " + text;
   if (!D) return; // data not loaded yet: still speak, nothing to record
   D.history.unshift({ t: new Date().toISOString(), text });
@@ -221,7 +232,7 @@ function renderKeyboard(box, mode, onKey, onMode, withSpeak) {
   r.appendChild(key(" ", "space", onKey, "space"));
   r.appendChild(key(".", ".", onKey));
   r.appendChild(key("?", "?", onKey));
-  if (withSpeak) r.appendChild(key(null, "SPEAK", () => say(msg), "speak"));
+  if (withSpeak) r.appendChild(key(null, "SPEAK", () => say(msg, { split: true }), "speak"));
   box.appendChild(r);
 }
 function key(val, label, onKey, cls) {
@@ -448,7 +459,19 @@ function openSettings() {
   renderSettings();
   renderSKeys();
 }
-function closeSettings() { $("#settings").hidden = true; settingsTarget = null; applySettings(); renderPanel(); renderMsg(); saveSoon(50); }
+// "Preparing voice: 37 of 120 phrases": the server renders every phrase ahead so taps are instant
+let prepTimer = null;
+async function showPrep() {
+  clearTimeout(prepTimer);
+  const n = $("#prep");
+  if (!n || $("#settings").hidden) return;
+  try {
+    const p = await (await fetch("/prepare")).json();
+    n.textContent = p.error || (p.total && p.done < p.total ? `Preparing voice: ${p.done} of ${p.total} phrases` : p.total ? "Voice ready: every phrase is prepared." : "");
+  } catch (e) { n.textContent = ""; }
+  prepTimer = setTimeout(showPrep, 2000);
+}
+function closeSettings() { clearTimeout(prepTimer); $("#settings").hidden = true; settingsTarget = null; applySettings(); renderPanel(); renderMsg(); saveSoon(50); }
 function el(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -490,13 +513,16 @@ async function renderSettings() {
   const vbar = el("div", { class: "bar" }, el("span", { text: "Voice:" }));
   body.append(vbar);
   body.append(el("div", { class: "bar" }, el("button", { text: "Test voice", onclick: () => play("Hello. This is my voice. Is this speed okay?") })));
+  body.append(el("div", { id: "prep", class: "small" }));
   fetch("/voices").then((r) => r.json()).then((vs) => {
     if (!vs.length) vbar.append(el("span", { class: "small", text: "Piper not found - using the browser voice." }));
+    const ids = vs.map((v) => v.id);
     for (const v of vs) {
-      const on = s.voice ? s.voice === v : v === "en_US-ryan-medium";
-      vbar.append(el("button", { class: on ? "on" : "", text: v.replace(/^en_US-|-medium$/g, ""), onclick: () => { s.voice = v; saveSoon(); renderSettings(); } }));
+      const on = ids.includes(s.voice) ? s.voice === v.id : v.id === "en_US-ryan-medium";
+      vbar.append(el("button", { class: on ? "on" : "", text: v.name, onclick: () => { s.voice = v.id; saveSoon(50); renderSettings(); } }));
     }
   }).catch(() => {});
+  showPrep();
 
   const people = D.categories.find((c) => c.id === "people");
   if (people) {
@@ -698,7 +724,7 @@ async function start() {
   applySettings();
   renderPanel(); renderMsg();
 
-  $("#speak").onclick = () => { unlockAudio(); say(msg); };
+  $("#speak").onclick = () => { unlockAudio(); say(msg, { split: true }); };
   $("#home").onclick = () => go("home");
   $("#back").onclick = () => typeKey("BS");
   $("#clear").onclick = () => {
@@ -709,7 +735,7 @@ async function start() {
 
   document.addEventListener("keydown", (e) => {
     if (!$("#settings").hidden || !$("#modal").hidden || e.ctrlKey || e.altKey || e.metaKey) return;
-    if (e.key === "Enter") { e.preventDefault(); say(msg); }
+    if (e.key === "Enter") { e.preventDefault(); say(msg, { split: true }); }
     else if (e.key === "Backspace") { e.preventDefault(); typeKey("BS"); }
     else if (e.key.length === 1) {
       e.preventDefault();
@@ -718,12 +744,6 @@ async function start() {
     }
   });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
-  // warm the server's speech cache so the always-there buttons answer instantly
-  (async () => {
-    for (const t of ["Yes", "No", "I'm not sure, ask me another way.", "I need help"]) {
-      try { await fetch("/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t, rate: D.settings.rate, voice: D.settings.voice }) }); } catch (e) { break; }
-    }
-  })();
   document.addEventListener("visibilitychange", () => { if (document.hidden) saveNow(); });
 }
 start();
