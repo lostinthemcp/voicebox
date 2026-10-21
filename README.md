@@ -7,10 +7,12 @@ It runs on the Surface by itself, with no internet needed after it is set up.
 
 - **Down one side (left by default):** YES, NO, NOT SURE, HOME and HOLD FOR HELP.
   These are on every screen.
-- **Across the top:** the message he is typing, a big **SPEAK** button, backspace, and CLEAR.
+- **Across the top:** a big **SPEAK** button with backspace and CLEAR right next to it, then the message
+  he is typing (a long message scrolls).
   If CLEAR was tapped by mistake it turns into **UNDO**. Tap that to get the message back.
-- **Home screen:** big tiles: Needs, Feelings, Medical, Hospital Staff, Talk, People, Keyboard,
-  Pain, History, About Me. Tap a tile, then tap a phrase to say it straight away.
+- **Home screen:** big tiles. The first one, **I love you**, says it straight away. The others (Needs,
+  Feelings, Medical, Hospital Staff, Talk, Ribbing, People, Keyboard, Pain, History, About Me) open a
+  page of phrases: tap a phrase to say it straight away. A quick double tap never hits the next screen.
   **More ▶** shows the next page when a tile has more than 9 phrases.
 - **Keyboard:** type a word, and the yellow buttons above the keys guess the word he is spelling.
   When no word is started, they guess the next word. It learns his words as he uses it.
@@ -23,6 +25,8 @@ It runs on the Surface by itself, with no internet needed after it is set up.
   times, then says "I need help". A quick bump does nothing.
 
 A half-typed message is kept, even if the tablet restarts. Nothing clears by itself.
+YES, NO, NOT SURE and HELP work even while VoiceBox is still starting.
+If no voice works at all, the words are shown big on the screen with an OK button, so he can point at them.
 
 ## Install (once, with internet)
 
@@ -36,6 +40,7 @@ keeps the screen from locking or sleeping, and turns the volume up to 100%.
 It is safe to run again, for example after copying in a newer version. Phrases and data are never touched.
 
 **Keep the Surface plugged in.** Sleep is turned off, so it will run the battery down.
+Closing the Type Cover does not put it to sleep. The power button asks before shutting down.
 
 ## Settings (for family)
 
@@ -53,7 +58,8 @@ In Settings you can:
 - **Exit to desktop**
 
 Tap a box, then type with the keys at the bottom of the Settings screen (or the keyboard cover).
-Tap **Done** when finished. Changes save by themselves.
+Tap **Done** when finished. Changes save by themselves. If the gear turns red, saving is failing
+(for example the disk is full). Settings says why at the top, and everything stays on screen while it keeps trying.
 
 ## Getting out and back in
 

@@ -35,7 +35,7 @@ DEFAULT_DATA = {
             "I need the bathroom", "I'm thirsty", "I'm hungry", "I'm cold", "I'm hot",
             "Please reposition me", "I'm tired"]},
         {"id": "feelings", "name": "Feelings", "icon": "heart", "phrases": [
-            "I'm frustrated", "Give me a minute", "I'm okay", "Thank you", "I love you",
+            "I love you", "I'm frustrated", "Give me a minute", "I'm okay", "Thank you",
             "Let me try again", "Please slow down",
             "I'm still in here. I understand everything.", "I'm tired, ask me later.",
             "I'm scared.", "This is really hard.", "I'm still me.", "Let me do it.",
@@ -84,8 +84,21 @@ tts_cache = {}  # (text, rate, voice) -> wav bytes; repeated phrases play instan
 
 
 def valid(d):
-    return (isinstance(d, dict) and isinstance(d.get("categories"), list)
-            and isinstance(d.get("settings", {}), dict))
+    """True only for data the page can actually load (a bad import must never brick it)."""
+    if not isinstance(d, dict) or not isinstance(d.get("categories"), list):
+        return False
+    for c in d["categories"]:
+        if not (isinstance(c, dict) and isinstance(c.get("id"), str) and isinstance(c.get("name"), str)
+                and isinstance(c.get("phrases", []), list) and all(isinstance(p, str) for p in c.get("phrases", []))):
+            return False
+    for key, typ in (("settings", dict), ("words", dict), ("bigrams", dict), ("history", list), ("draft", str)):
+        if key in d and not isinstance(d[key], typ):
+            return False
+    if not all(isinstance(v, dict) for v in d.get("bigrams", {}).values()):
+        return False
+    if not all(isinstance(h, dict) and isinstance(h.get("text"), str) for h in d.get("history", [])):
+        return False
+    return True
 
 
 def read_json(path):
@@ -246,7 +259,10 @@ class Handler(SimpleHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_BODY:
             raise ValueError("too big")
-        return json.loads(self.rfile.read(n) or b"{}")
+        d = json.loads(self.rfile.read(n) or b"{}")
+        if not isinstance(d, dict):
+            raise ValueError("JSON object expected")
+        return d
 
     def do_GET(self):
         if not self.local_only():
@@ -271,7 +287,11 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/data":
             if not valid(req):
                 return self.send_json({"error": "invalid data"}, 400)
-            save(req)
+            try:
+                save(req)
+            except OSError as e:  # disk full or read-only: say so, the page keeps its copy and retries
+                sys.stderr.write("save failed: %s\n" % e)
+                return self.send_json({"error": "could not write data: %s" % e.strerror}, 507)
             return self.send_json({"ok": True})
         if self.path == "/speak":
             text = str(req.get("text") or "").strip()[:1000]
@@ -299,9 +319,12 @@ class Handler(SimpleHTTPRequestHandler):
                 d = read_json(path)
             except Exception:
                 return self.send_json({"error": "backup is damaged"}, 400)
-            with lock:
-                backup_current(force=True)  # the state we are replacing stays recoverable
-                write_atomic(DATA, json.dumps(d, ensure_ascii=False))
+            try:
+                with lock:
+                    backup_current(force=True)  # the state we are replacing stays recoverable
+                    write_atomic(DATA, json.dumps(d, ensure_ascii=False))
+            except OSError as e:
+                return self.send_json({"error": "could not write data: %s" % e.strerror}, 507)
             return self.send_json({"ok": True})
         if self.path == "/exit-kiosk":
             os.makedirs(HOME, exist_ok=True)

@@ -27,10 +27,12 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 #speak { width: 22vw; min-width: 230px; font-size: 2.6rem; }
 .speak { background: var(--accent); color: #000; border-color: var(--accent); }
 .speak:active { background: #fff; color: #000; }
-#msg { flex: 1; min-width: 0; background: var(--panel); border: 3px solid var(--accent); border-radius: 12px; font-size: 2.4rem; line-height: 1.2; padding: 0.2em 0.4em; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; word-break: break-word; }
+#msg { flex: 1; min-width: 0; background: var(--panel); border: 3px solid var(--accent); border-radius: 12px; font-size: 2.4rem; line-height: 1.2; padding: 0.2em 0.4em; overflow-y: auto; touch-action: pan-y; display: flex; flex-direction: column; word-break: break-word; }
+#msg > div { margin-top: auto; } /* text sits at the bottom, older lines scroll up */
 #msg .caret { display: inline-block; width: 0.08em; height: 1em; background: var(--accent); vertical-align: -0.12em; }
 #back { width: 9vw; min-width: 90px; font-size: 2.8rem; }
 #clear { width: 10vw; min-width: 100px; font-size: 1.6rem; }
+#gear.warn { border-color: #ff5a3c; color: #ff5a3c; }
 #gear { width: 4.5vw; min-width: 48px; font-size: 1.8rem; background: transparent; border-color: #333; color: #888; }
 
 #controls { width: 22vw; min-width: 230px; display: flex; flex-direction: column; gap: var(--gap); }
@@ -43,7 +45,7 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 #home { flex: 1.1; font-size: 2rem; border-color: #fff; }
 #home.here { color: #888; border-color: var(--edge); }
 
-.hold { position: relative; overflow: hidden; }
+.hold { position: relative; overflow: hidden; touch-action: none; } /* a shaky finger must not cancel the hold */
 .hold .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255, 255, 255, 0.35); pointer-events: none; }
 .hold.holding .fill { width: 100%; transition: width var(--hold-ms, 1000ms) linear; }
 .hold .label { position: relative; pointer-events: none; }
@@ -60,6 +62,8 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.4vh;
 svg.icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
 .tiles .icon { font-size: 4.2rem; line-height: 1; color: var(--accent); }
 .tiles .kbd .icon { color: var(--accent); }
+.tiles .love { border: 3px solid #ff5a78; }
+.tiles .love .icon { color: #ff5a78; }
 .head .icon { font-size: 2.4rem; color: var(--accent); align-self: center; }
 #sbody button.pic { font-size: 2rem; min-width: 3.4rem; }
 .tiles .kbd { border-color: var(--accent); color: var(--accent); }
@@ -110,8 +114,12 @@ svg.icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-wid
 .stop { position: sticky; top: 0; background: #000; display: flex; justify-content: space-between; align-items: center; padding: 0.4em 0; z-index: 1; }
 .stop h1 { margin: 0; font-size: 1.8rem; }
 
-#modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 20; display: flex; align-items: center; justify-content: center; }
-#modal .box { background: #111; border: 3px solid var(--accent); border-radius: 16px; padding: 3vh 3vw; width: 70vw; }
+#modal { position: fixed; top: 0; bottom: 0; left: calc(max(22vw, 230px) + 1.6vh); right: 0; /* never covers YES/NO/HELP */ background: rgba(0, 0, 0, 0.85); z-index: 20; display: flex; align-items: center; justify-content: center; }
+#modal .box { background: #111; border: 3px solid var(--accent); border-radius: 16px; padding: 3vh 3vw; width: 90%; max-height: 94vh; overflow-y: auto; }
+.side-right #modal { left: 0; right: calc(max(22vw, 230px) + 1.6vh); }
+#modal .box p.bigtext { font-size: 3.4rem; line-height: 1.2; color: #fff; user-select: text; }
+#modal .big button { min-height: 12vh; width: 100%; font-size: 2.4rem; }
+#savenote { color: #ff5a3c; font-size: 1.4rem; font-weight: 700; }
 #modal .box p { font-size: 1.6rem; margin: 0 0 1em; }
 
 #toast { position: fixed; left: 50%; bottom: 4vh; transform: translateX(-50%); background: var(--accent); color: #000; font-size: 1.5rem; font-weight: 700; padding: 0.5em 1em; border-radius: 12px; opacity: 0; pointer-events: none; transition: opacity 0.3s; z-index: 30; }
