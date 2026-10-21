@@ -197,6 +197,7 @@ const ICONS = {
   hospital: "M4 21V7l8-4 8 4v14 M2 21h20 M10 21v-4h4v4 M12 7v5 M9.5 9.5h5",
   talk: "M4 5h16v11H10l-5 4v-4H4z",
   people: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6 M16 5a3 3 0 0 1 0 6 M18 14c2 .7 3 2.8 3 6",
+  smile: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M8 14c1 1.5 2.4 2.2 4 2.2s3-.7 4-2.2 M9 9.5h.01 M15 9.5h.01",
   card: "M3 5h18v14H3z M8 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M5 16c.5-1.8 1.6-2.5 3-2.5s2.5.7 3 2.5 M14 9h4 M14 13h4",
   keyboard: "M2 6h20v12H2z M6 10h1 M10 10h1 M14 10h1 M18 10h1 M7 14h10",
   bolt: "M13 2L4 14h7l-1 8 9-12h-7z",
@@ -262,7 +263,7 @@ function tileList() {
 function renderHome(p) {
   const g = el("div", { class: "tiles" });
   const tiles = tileList();
-  g.style.gridTemplateColumns = `repeat(${tiles.length > 10 ? 6 : 5}, 1fr)`;
+  g.style.gridTemplateColumns = `repeat(${tiles.length > 10 ? 4 : 5}, minmax(0, 1fr))`;
   for (const t of tiles) {
     g.append(el("button", { class: t.id === "keyboard" ? "kbd" : "", "data-tile": t.id, onclick: () => go(t.id) },
       icon(t.icon), el("span", { text: t.name })));
