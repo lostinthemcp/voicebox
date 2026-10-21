@@ -63,13 +63,31 @@ function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return n
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode etc. */ } }
 
 // ---------- speech ----------
+// One generous timeout: a slow Surface must never lose short typed text to an early give-up
+// (the browser voice on that box is silent). Only a real error or 503 falls back.
+let waitingFor = 0;
 function fetchWav(text) {
   const s = settings(), ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), Math.min(15000, 4000 + 40 * text.length)); // long text takes longer
+  const t = setTimeout(() => ctl.abort(), 20000);
+  document.body.classList.toggle("waiting", ++waitingFor > 0);
   return fetch("/speak", { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, rate: s.rate, voice: s.voice }) })
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); })
-    .finally(() => clearTimeout(t));
+    .finally(() => { clearTimeout(t); document.body.classList.toggle("waiting", --waitingFor > 0); });
+}
+// battery, always in view next to the gear; red "PLUG IN" under 20% when not charging
+async function showBattery() {
+  const e = $("#battery");
+  try {
+    const b = await (await fetch("/battery")).json();
+    if (b.percent == null) { e.hidden = true; return; }
+    const low = b.percent < 20 && !b.plugged;
+    e.hidden = false;
+    e.classList.toggle("low", low);
+    e.replaceChildren(el("span", { text: "\u{1F50B}" + b.percent + "%" + (b.plugged ? "\u26A1" : "") }));
+    if (low) e.append(el("span", { class: "plug", text: "PLUG IN" }));
+    e.setAttribute("aria-label", "Battery " + b.percent + " percent" + (b.plugged ? ", charging" : "") + (low ? ", plug in" : ""));
+  } catch (err) { /* server restarting: keep the last reading */ }
 }
 // split: typed text is spoken a sentence at a time, the next one rendering while this one plays
 async function play(text, split = false) {
@@ -715,6 +733,8 @@ async function start() {
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
   $("#holdon").onclick = () => say("Hold on. Give me a minute, I'm typing.");
   holdButton($("#help"), 1000, helpAlarm);
+  showBattery();
+  setInterval(showBattery, 60000);
   // a finger that moved 10 px or more was scrolling a list, not pressing a button
   let downAt = null, moved = 0;
   for (const area of [$("#panel"), $("#modal")]) {

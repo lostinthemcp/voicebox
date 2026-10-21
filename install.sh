@@ -87,7 +87,7 @@ fi
 step "App files"
 mkdir -p "$APP"
 # copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
-for f in server.py kiosk.sh kokoro_worker.py voices.txt; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
+for f in server.py kiosk.sh kokoro_worker.py piper_worker.py voices.txt; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
 chmod +x "$APP/kiosk.sh"
 # outside app/, so the in-app updater can never replace the thing that undoes a bad update
 cp -f "$SRC/bootguard.sh" "$VB/bootguard.sh.new" && mv -f "$VB/bootguard.sh.new" "$VB/bootguard.sh" && chmod +x "$VB/bootguard.sh" \
@@ -100,14 +100,23 @@ rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$AP
 { git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown; } >"$APP/VERSION.new" && mv -f "$APP/VERSION.new" "$APP/VERSION"
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
 
-step "Kokoro voices (Michael, Fenrir, Puck, George; optional, Piper works without it)"
+step "Speech engines: fast Piper worker + Kokoro voices (optional; the piper program still works without them)"
 mkdir -p "$KOK"
 if { dpkg -s python3-venv >/dev/null 2>&1 || sudo apt-get install -y python3-venv >/dev/null 2>&1; } \
    && { [ -x "$KOK/venv/bin/python3" ] || python3 -m venv "$KOK/venv"; } \
-   && "$KOK/venv/bin/pip" install -q --disable-pip-version-check kokoro-onnx==0.6.1 onnxruntime==1.31.0 numpy==2.4.6; then  # the versions tested on LOKI
-  ok "kokoro engine (kokoro-onnx 0.6.1)"
+   && "$KOK/venv/bin/pip" install -q --disable-pip-version-check kokoro-onnx==0.6.1 piper-tts==1.8.0 onnxruntime==1.31.0 numpy==2.4.6; then  # tested on LOKI
+  ok "speech engines (kokoro-onnx 0.6.1, piper-tts 1.8.0)"
 else
-  warn "kokoro engine did not install - the Piper voices still work; run install.sh again later"
+  warn "speech engines did not install - the piper program still speaks (slower); run install.sh again later"
+fi
+if [ -x "$KOK/venv/bin/python3" ] && [ -s "$PIPER/en_US-ryan-medium.onnx" ]; then
+  rm -f "$VB/piper-test.wav"
+  if printf '{"text": "Voice box is ready.", "voice": "en_US-ryan-medium", "speed": 1, "out": "%s"}\n' "$VB/piper-test.wav" \
+       | timeout 120 "$KOK/venv/bin/python3" "$APP/piper_worker.py" "$PIPER" 2>/dev/null | grep -q '"ok"' && [ -s "$VB/piper-test.wav" ]; then
+    ok "fast Piper worker speaks (test file $VB/piper-test.wav)"
+  else
+    warn "fast Piper worker failed a test run - the slower piper program is used"
+  fi
 fi
 for fs in $KOKORO_FILES; do
   f="${fs%%:*}"; sum="${fs#*:}"
