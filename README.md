@@ -131,6 +131,12 @@ Everything (phrases, names, learned words, history, settings) lives in one file:
    (ms) and which voice/engine answered (last 500 lines). `systemctl --user status voicebox` and `journalctl --user -u voicebox` show the server;
    `~/.local/share/voicebox/kiosk.log` shows the browser loop.
 
+## Remote help (RustDesk)
+
+The installer adds RustDesk so Joe can see and fix the Surface from home. After installing, open RustDesk
+from the menu, go to Settings > Security > Set permanent password, and write down the ID number it shows.
+Joe connects with that ID and password. Nobody can connect without the password.
+
 ## Remove
 
 `bash uninstall.sh` stops auto-login, the kiosk and the service, and puts screen lock and sleep back.

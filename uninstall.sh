@@ -37,3 +37,4 @@ done
 
 echo "VoiceBox start-up removed. Auto-login off; screen lock, sleep, lid and power button back to defaults (lid fully after a restart)."
 echo "Kept: $VB (data.json, backups, voices, app). Delete that folder yourself only if you are sure."
+echo "RustDesk is still installed. To remove it: sudo apt remove rustdesk"
