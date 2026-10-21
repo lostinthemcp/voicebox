@@ -814,12 +814,12 @@ class PowerKeyTest(unittest.TestCase):
             time.sleep(0.3)
             self.assertFalse(os.path.exists(self.flag))
             w.write(ev(1, 116, 1) + ev(0, 0, 0) + ev(1, 116, 0))  # tap: press + release
-            time.sleep(0.5)
+            time.sleep(1.5)  # acts on the release, after a 0.5 s settle
             self.assertEqual(pathlib.Path(self.state).read_text().strip(), "Off")
             self.assertTrue(os.path.exists(self.flag), "dark flag, so kiosk.sh leaves DPMS alone")
             time.sleep(0.5)
             w.write(ev(1, 116, 1) + ev(1, 116, 0))  # tap again: back on
-            time.sleep(0.5)
+            time.sleep(1.0)
             self.assertEqual(pathlib.Path(self.state).read_text().strip(), "On")
             self.assertFalse(os.path.exists(self.flag))
         p.wait(5)
