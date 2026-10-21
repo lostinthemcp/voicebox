@@ -30,6 +30,7 @@ for k in "org.cinnamon.desktop.screensaver lock-enabled" "org.cinnamon.desktop.s
          "org.cinnamon.settings-daemon.plugins.power lid-close-suspend-with-external-monitor" \
          "org.cinnamon.settings-daemon.plugins.power button-power" \
          "org.cinnamon.settings-daemon.plugins.power button-suspend" \
+         "org.cinnamon.settings-daemon.peripherals.touchscreen orientation-lock" \
          "org.cinnamon hotcorner-layout"; do
   # shellcheck disable=SC2086  # schema and key are two words on purpose
   gsettings reset $k 2>/dev/null
