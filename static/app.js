@@ -503,8 +503,11 @@ function helpAlarm() {
 }
 
 // ---------- settings ----------
+function showSKeys(on) { $("#skeys").hidden = !on; }
 function openSettings() {
   $("#settings").hidden = false;
+  showSKeys(false);
+  $("#sdone").onclick = closeSettings;
   settingsCat = settingsCat || (D.categories[0] && D.categories[0].id);
   renderSettings();
   renderSKeys();
@@ -534,172 +537,195 @@ function textInput(value, onInput, placeholder = "") {
   const i = el("input", { type: "text", inputmode: "none", placeholder });
   i.value = value;
   i.oninput = () => onInput(i.value);
-  i.onfocus = () => { settingsTarget = i; };
+  i.onfocus = () => { settingsTarget = i; showSKeys(true); setTimeout(() => i.scrollIntoView({ block: "nearest" }), 50); };
+  i.onblur = () => setTimeout(() => { if (!(document.activeElement && document.activeElement.matches("#sbody input[type=text]"))) showSKeys(false); }, 100);
   return i;
 }
-function stepper(label, get, set, step, min, max, fmt) {
+function stepper(get, set, step, min, max, fmt) {
   const v = el("span", { class: "val", text: fmt(get()) });
   const change = (d) => { set(Math.round(Math.min(max, Math.max(min, get() + d)) * 100) / 100); v.textContent = fmt(get()); applySettings(); saveSoon(); };
-  return el("div", { class: "bar" }, el("span", { text: label }), el("button", { text: "−", onclick: () => change(-step) }), v, el("button", { text: "+", onclick: () => change(step) }));
+  return [el("button", { text: "−", "aria-label": "Less", onclick: () => change(-step) }), v, el("button", { text: "+", "aria-label": "More", onclick: () => change(step) })];
 }
 function slug(name) { return name.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-" + Date.now().toString(36); }
+// Settings, for the family: big section tabs on the left, one section at a time on the right.
+const TABS = [["voice", "Voice & sound"], ["screen", "Screen"], ["phrases", "Phrases"], ["family", "Family names"],
+  ["about", "About me"], ["updates", "Updates"], ["backups", "Backups"]];
+let settingsTab = "voice";
+function srow(label, ...controls) {
+  return el("div", { class: "srow" }, el("div", { class: "slabel", text: label }), el("div", { class: "ctl" }, ...controls));
+}
+function choice(options, get, set) {
+  return options.map(([val, text]) => el("button", { class: get() === val ? "on" : "", text, onclick: () => { set(val); saveSoon(); renderSettings(); } }));
+}
 async function renderSettings() {
-  const s = D.settings, body = $("#sbody");
-  const keepScroll = body.scrollTop;
+  const s = D.settings, body = $("#sbody"), nav = $("#snav");
+  const keepScroll = body.dataset.tab === settingsTab ? body.scrollTop : 0;
+  nav.innerHTML = "";
+  for (const [id, name] of TABS) nav.append(el("button", { class: id === settingsTab ? "on" : "", "data-tab": id, text: name, onclick: () => { settingsTab = id; renderSettings(); } }));
+  nav.append(el("button", { class: "danger exit" + (settingsTab === "exit" ? " on" : ""), "data-tab": "exit", text: "Exit to desktop", onclick: () => { settingsTab = "exit"; renderSettings(); } }));
   body.innerHTML = "";
-  body.append(el("div", { class: "stop" }, el("h1", { text: "Settings (family)" }), el("button", { class: "speak", text: "Done", onclick: closeSettings })));
-  body.append(el("div", { id: "savenote" }));
+  body.dataset.tab = settingsTab;
   saveProblem(saveError);
-
-  body.append(el("h2", { text: "Screen and voice" }));
-  body.append(stepper("Text size", () => s.textSize, (x) => { s.textSize = x; }, 0.1, 0.7, 1.6, (x) => Math.round(x * 100) + "%"));
-  body.append(stepper("Voice speed", () => s.rate, (x) => { s.rate = x; }, 0.1, 0.5, 2, (x) => x.toFixed(1) + "x"));
-  const sideBar = el("div", { class: "bar" }, el("span", { text: "Big buttons on:" }));
-  for (const side of ["left", "right"]) {
-    sideBar.append(el("button", { class: s.side === side ? "on" : "", text: side === "left" ? "Left side" : "Right side",
-      onclick: () => { s.side = side; applySettings(); saveSoon(); renderSettings(); } }));
-  }
-  body.append(sideBar);
-  const fastBar = el("div", { class: "bar" }, el("span", { text: "Fast voice for typing:" }));
-  for (const on of [true, false]) {
-    fastBar.append(el("button", { class: (s.fastTyping !== false) === on ? "on" : "", text: on ? "On" : "Off",
-      onclick: () => { s.fastTyping = on; saveSoon(); renderSettings(); } }));
-  }
-  fastBar.append(el("span", { class: "small", text: "On: typed messages use Ryan (or Joe/Norman) so they are quick." }));
-  body.append(fastBar);
-  const vbar = el("div", { class: "bar" }, el("span", { text: "Voice:" }));
-  body.append(vbar);
-  body.append(el("div", { class: "bar" }, el("button", { text: "Test voice", onclick: () => play("Hello. This is my voice. Is this speed okay?") })));
-  body.append(el("div", { id: "prep", class: "small" }));
-  fetch("/voices").then((r) => r.json()).then((vs) => {
-    if (!vs.length) vbar.append(el("span", { class: "small", text: "Piper not found - using the browser voice." }));
-    const ids = vs.map((v) => v.id);
-    for (const v of vs) {
-      const on = ids.includes(s.voice) ? s.voice === v.id : v.id === "en_US-ryan-medium";
-      const st = v.total && v.ready >= v.total ? "Ready" : on ? `Preparing ${v.ready} of ${v.total}` : `${v.ready} of ${v.total} ready`;
-      vbar.append(el("button", { class: on ? "on voice" : "voice", onclick: () => { s.voice = v.id; saveSoon(50); renderSettings(); } },
-        el("span", { text: v.name }), el("span", { class: "vstat", text: v.total ? st : "" })));
+  const title = (TABS.find(([id]) => id === settingsTab) || [, "Exit to desktop"])[1];
+  body.append(el("h2", { text: title }));
+  SECTIONS[settingsTab](body, s);
+  body.scrollTop = keepScroll;
+}
+const SECTIONS = {
+  voice(body, s) {
+    const list = el("div", { class: "voices" }, el("span", { class: "small", text: "Loading voices..." }));
+    body.append(srow("Voice", list));
+    body.append(srow("", el("button", { text: "Test voice", onclick: () => play("Hello. This is my voice. Is this speed okay?") }), el("span", { id: "prep", class: "small" })));
+    body.append(srow("Voice speed", ...stepper(() => s.rate, (x) => { s.rate = x; }, 0.1, 0.5, 2, (x) => x.toFixed(1) + "x")));
+    body.append(srow("Fast voice for typing", ...choice([[true, "On"], [false, "Off"]], () => s.fastTyping !== false, (v) => { s.fastTyping = v; }),
+      el("span", { class: "small", text: "On: typed messages use Ryan (or Joe/Norman), so they come out quickly." })));
+    body.append(srow("Volume", ...stepper(() => Math.round(vol() * 100), (x) => { s.volume = x; applySettings(); }, 10, 50, 100, (x) => x + "%"),
+      el("span", { class: "small", text: "Also the slider at the top of his screen. Never below 50%." })));
+    fetch("/voices").then((r) => r.json()).then((vs) => {
+      list.innerHTML = "";
+      if (!vs.length) list.append(el("span", { class: "small", text: "Piper not found - using the browser voice." }));
+      const ids = vs.map((v) => v.id);
+      for (const v of vs) {
+        const on = ids.includes(s.voice) ? s.voice === v.id : v.id === "en_US-ryan-medium";
+        const st = v.total && v.ready >= v.total ? "Ready" : on ? `Preparing ${v.ready} of ${v.total}` : `${v.ready} of ${v.total} ready`;
+        list.append(el("button", { class: on ? "on voice" : "voice", onclick: () => { s.voice = v.id; saveSoon(50); renderSettings(); } },
+          el("span", { text: v.name }), el("span", { class: "vstat", text: v.total ? st : "" })));
+      }
+    }).catch(() => { list.textContent = "Could not list the voices."; });
+    showPrep();
+  },
+  screen(body, s) {
+    body.append(srow("Text size", ...stepper(() => s.textSize, (x) => { s.textSize = x; }, 0.1, 0.7, 1.6, (x) => Math.round(x * 100) + "%")));
+    body.append(srow("Big buttons on", ...choice([["left", "Left side"], ["right", "Right side"]], () => s.side, (v) => { s.side = v; applySettings(); })));
+  },
+  phrases(body) {
+    const cat = D.categories.find((c) => c.id === settingsCat) || D.categories[0];
+    if (cat) settingsCat = cat.id;
+    body.append(srow("Tile", ...D.categories.map((c) => el("button", { class: c === cat ? "on" : "", text: c.name, onclick: () => { settingsCat = c.id; renderSettings(); } }))));
+    if (cat) {
+      body.append(srow("Tile name", textInput(cat.name, (v) => { cat.name = v || cat.name; saveSoon(); })));
+      body.append(srow("Picture", ...Object.keys(ICONS).map((n) => {
+        const b = el("button", { class: (cat.icon || "star") === n ? "on pic" : "pic", "aria-label": n, onclick: () => { cat.icon = n; saveSoon(); renderSettings(); } });
+        b.append(icon(n));
+        return b;
+      })));
+      phraseEditor(body, cat, "phrase");
+      const ci = D.categories.indexOf(cat);
+      const moveCat = (d) => { const j = ci + d; if (j < 0 || j >= D.categories.length) return; [D.categories[ci], D.categories[j]] = [D.categories[j], D.categories[ci]]; saveSoon(); renderSettings(); };
+      body.append(srow("This tile", el("button", { text: "◀ Move earlier", onclick: () => moveCat(-1) }), el("button", { text: "Move later ▶", onclick: () => moveCat(1) }),
+        el("button", { class: "danger", text: "Delete this tile", onclick: () => {
+          if (confirm(`Delete the whole "${cat.name}" tile and its ${cat.phrases.length} phrases? (A backup is kept.)`)) {
+            D.categories.splice(ci, 1); settingsCat = D.categories[0] && D.categories[0].id; saveSoon(50); renderSettings();
+          }
+        } })));
     }
-  }).catch(() => {});
-  showPrep();
-
-  const people = D.categories.find((c) => c.id === "people");
-  if (people) {
-    body.append(el("h2", { text: "Family names (People tile)" }));
-    let name = "";
-    const inp = textInput("", (v) => { name = v; }, "Type a name");
-    body.append(el("div", { class: "bar" }, inp, el("button", { text: "Add name", onclick: () => {
-      name = inp.value.trim();
-      if (name && !people.phrases.includes(name)) { people.phrases.push(name); saveSoon(50); toast("Added " + name); }
-      renderSettings();
+    const newCat = textInput("", () => {}, "New tile name");
+    body.append(srow("New tile", newCat, el("button", { text: "Add tile", onclick: () => {
+      const v = newCat.value.trim(); if (!v) return;
+      const c = { id: slug(v), name: v, icon: "star", phrases: [] }; D.categories.push(c); settingsCat = c.id; saveSoon(50); renderSettings();
     } })));
-  }
-
-  body.append(el("h2", { text: "Phrases" }));
-  const cbar = el("div", { class: "bar" });
-  for (const c of D.categories) cbar.append(el("button", { class: c.id === settingsCat ? "on" : "", text: c.name, onclick: () => { settingsCat = c.id; renderSettings(); } }));
-  body.append(cbar);
-  const cat = D.categories.find((c) => c.id === settingsCat);
-  if (cat) {
-    body.append(el("div", { class: "bar" }, el("span", { text: "Tile name:" }), textInput(cat.name, (v) => { cat.name = v || cat.name; saveSoon(); }),
-      ));
-    const pics = el("div", { class: "bar" }, el("span", { text: "Picture:" }));
-    for (const n of Object.keys(ICONS)) {
-      const b = el("button", { class: (cat.icon || "star") === n ? "on pic" : "pic", "aria-label": n, onclick: () => { cat.icon = n; saveSoon(); renderSettings(); } });
-      b.append(icon(n));
-      pics.append(b);
-    }
-    body.append(pics);
-    cat.phrases.forEach((ph, i) => {
-      const move = (d) => { const j = i + d; if (j < 0 || j >= cat.phrases.length) return; [cat.phrases[i], cat.phrases[j]] = [cat.phrases[j], cat.phrases[i]]; saveSoon(); renderSettings(); };
-      body.append(el("div", { class: "row" },
-        textInput(ph, (v) => { cat.phrases[i] = v; saveSoon(); }),
-        el("button", { text: "▲", "aria-label": "Move up", onclick: () => move(-1) }),
-        el("button", { text: "▼", "aria-label": "Move down", onclick: () => move(1) }),
-        el("button", { class: "danger", text: "Delete", onclick: () => { if (confirm(`Delete "${ph}"?`)) { cat.phrases.splice(i, 1); saveSoon(50); renderSettings(); } } })));
-    });
-    const add = textInput("", () => {}, "New phrase");
-    body.append(el("div", { class: "bar" }, add, el("button", { text: "Add phrase", onclick: () => {
-      const v = add.value.trim(); if (v) { cat.phrases.push(v); saveSoon(50); renderSettings(); }
-    } })));
-    const ci = D.categories.indexOf(cat);
-    const moveCat = (d) => { const j = ci + d; if (j < 0 || j >= D.categories.length) return; [D.categories[ci], D.categories[j]] = [D.categories[j], D.categories[ci]]; saveSoon(); renderSettings(); };
-    body.append(el("div", { class: "bar" },
-      el("button", { text: "◀ Move tile", onclick: () => moveCat(-1) }),
-      el("button", { text: "Move tile ▶", onclick: () => moveCat(1) }),
-      el("button", { class: "danger", text: `Delete the "${cat.name}" tile`, onclick: () => {
-        if (confirm(`Delete the whole "${cat.name}" tile and its ${cat.phrases.length} phrases? (A backup is kept.)`)) {
-          D.categories.splice(ci, 1); settingsCat = D.categories[0] && D.categories[0].id; saveSoon(50); renderSettings();
-        }
-      } })));
-  }
-  const newCat = textInput("", () => {}, "New tile name");
-  body.append(el("div", { class: "bar" }, newCat, el("button", { text: "Add tile", onclick: () => {
-    const v = newCat.value.trim(); if (!v) return;
-    const c = { id: slug(v), name: v, icon: "star", phrases: [] }; D.categories.push(c); settingsCat = c.id; saveSoon(50); renderSettings();
-  } })));
-
-  body.append(el("h2", { text: "Data and backups" }));
-  const file = el("input", { type: "file", accept: ".json,application/json", style: "display:none" });
-  file.onchange = async () => {
-    try {
-      const d = JSON.parse(await file.files[0].text());
-      if (!d || !Array.isArray(d.categories)) throw new Error("not VoiceBox data");
-      if (!confirm("Replace everything with this file? (The current data is backed up first.)")) return;
-      await stopSaves();
-      const r = await fetch("/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(d) });
-      if (!r.ok) throw new Error(r.status);
-      await reloadData(); toast("Imported");
-    } catch (e) { toast("Import failed: " + e.message, true); }
-    file.value = "";
-  };
-  body.append(el("div", { class: "bar" },
-    el("button", { text: "Export (download)", onclick: () => {
+  },
+  family(body) {
+    const people = D.categories.find((c) => c.id === "people");
+    body.append(el("p", { class: "small", text: "Each name is a button on the People tile. Tap it and he says the name." }));
+    if (!people) { body.append(el("p", { text: "The People tile was deleted. Add a tile named People under Phrases." })); return; }
+    phraseEditor(body, people, "name");
+  },
+  about(body) {
+    const about = D.categories.find((c) => c.id === "about");
+    body.append(el("p", { class: "small", text: "Facts he can say about himself (on the About Me tile), for example his name, birthday or address." }));
+    if (!about) { body.append(el("p", { text: "The About Me tile was deleted. Add a tile under Phrases." })); return; }
+    phraseEditor(body, about, "line");
+  },
+  updates(body) {
+    const ver = el("span", { text: "..." }), when = el("span", { text: "..." });
+    fetch("/version").then((r) => r.json()).then((v) => {
+      ver.textContent = (v.version || "unknown").slice(0, 7);
+      when.textContent = v.installed || "not known";
+    }).catch(() => { ver.textContent = when.textContent = "not known"; });
+    const ustat = el("div", { id: "ustat", class: "small", text: "Needs the internet. Phrases, names and backups are never changed by an update." });
+    const ubar = el("div", { class: "ctl" });
+    ubar.append(el("button", { text: "Check for updates", onclick: async () => {
+      ustat.textContent = "Checking...";
+      try {
+        const j = await updatePost("/update/check");
+        if (!j.available) { ustat.textContent = "Up to date (version " + j.current.slice(0, 7) + ")."; return; }
+        ustat.textContent = "Update available.";
+        if (!ubar.querySelector(".install")) ubar.prepend(el("button", { class: "speak install", text: "Install update", onclick: () => runUpdate("/update/install", ustat) }));
+      } catch (e) { ustat.textContent = e.message; }
+    } }));
+    ubar.append(el("button", { text: "Undo last update", onclick: () => {
+      if (confirm("Go back to the version before the last update?")) runUpdate("/update/undo", ustat);
+    } }));
+    body.append(srow("Installed version", ver));
+    body.append(srow("Last update", when));
+    body.append(el("div", { class: "srow" }, el("div", { class: "slabel", text: "Update" }), ubar));
+    body.append(srow("", ustat));
+  },
+  backups(body) {
+    const file = el("input", { type: "file", accept: ".json,application/json", style: "display:none" });
+    file.onchange = async () => {
+      try {
+        const d = JSON.parse(await file.files[0].text());
+        if (!d || !Array.isArray(d.categories)) throw new Error("not VoiceBox data");
+        if (!confirm("Replace everything with this file? (The current data is backed up first.)")) return;
+        await stopSaves();
+        const r = await fetch("/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(d) });
+        if (!r.ok) throw new Error(r.status);
+        await reloadData(); toast("Imported");
+      } catch (e) { toast("Import failed: " + e.message, true); }
+      file.value = "";
+    };
+    body.append(srow("Copy to a USB stick", el("button", { text: "Export (download)", onclick: () => {
       const a = el("a", { href: URL.createObjectURL(new Blob([JSON.stringify(D, null, 1)], { type: "application/json" })),
         download: "voicebox-" + new Date().toISOString().slice(0, 10) + ".json" });
       document.body.append(a); a.click(); a.remove();
-    } }),
-    el("button", { text: "Import from file", onclick: () => file.click() }), file));
-  const blist = el("div", {}, el("div", { class: "small", text: "Loading backups..." }));
-  body.append(el("div", { class: "small", text: "Backups are saved automatically (every 10 minutes while in use, plus one a day). Tap one to go back to it." }), blist);
-  fetch("/backups").then((r) => r.json()).then((bs) => {
-    blist.innerHTML = "";
-    if (!bs.length) blist.append(el("div", { class: "small", text: "No backups yet." }));
-    for (const b of bs.slice(0, 30)) {
-      blist.append(el("div", { class: "bar" }, el("button", { text: "Restore " + b.time + (b.name.startsWith("daily") ? " (daily)" : ""), onclick: async () => {
-        if (!confirm("Go back to the backup from " + b.time + "? (Today's data is backed up first.)")) return;
-        await stopSaves(); // an in-flight save must not undo the restore
-        const r = await fetch("/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: b.name }) });
-        if (r.ok) { await reloadData(); toast("Restored " + b.time); } else toast("Restore failed", true);
-      } })));
-    }
-  }).catch(() => { blist.textContent = "Could not list backups."; });
-
-  body.append(el("h2", { text: "Updates" }));
-  const ustat = el("div", { id: "ustat", class: "small", text: "Needs the internet. Phrases, names and backups are never changed by an update." });
-  const ubar = el("div", { class: "bar" });
-  ubar.append(el("button", { text: "Check for updates", onclick: async () => {
-    ustat.textContent = "Checking...";
-    try {
-      const j = await updatePost("/update/check");
-      if (!j.available) { ustat.textContent = "Up to date (version " + j.current.slice(0, 7) + ")."; return; }
-      ustat.textContent = "Update available.";
-      if (!ubar.querySelector(".install")) ubar.prepend(el("button", { class: "speak install", text: "Install update", onclick: () => runUpdate("/update/install", ustat) }));
-    } catch (e) { ustat.textContent = e.message; }
-  } }));
-  ubar.append(el("button", { text: "Undo last update", onclick: () => {
-    if (confirm("Go back to the version before the last update?")) runUpdate("/update/undo", ustat);
-  } }));
-  body.append(ubar, ustat);
-
-  body.append(el("h2", { text: "Leave VoiceBox" }));
-  body.append(el("div", { class: "bar" }, el("button", { class: "danger", text: "Exit to desktop", onclick: async () => {
-    if (!confirm("Close VoiceBox and go to the desktop? Use the Start VoiceBox icon to come back.")) return;
-    await saveNow();
-    fetch("/exit-kiosk", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    } }), el("span", { class: "small", text: "Saves a file to Downloads." })));
+    body.append(srow("Bring a file back", el("button", { text: "Import from file", onclick: () => file.click() }), file));
+    const blist = el("div", { class: "ctl blist" }, el("span", { class: "small", text: "Loading backups..." }));
+    body.append(srow("Go back in time", el("span", { class: "small", text: "Made by themselves every 10 minutes while in use, plus one a day. Tap one to go back to it." })));
+    body.append(el("div", { class: "srow" }, el("div", { class: "slabel" }), blist));
+    fetch("/backups").then((r) => r.json()).then((bs) => {
+      blist.innerHTML = "";
+      if (!bs.length) blist.append(el("span", { class: "small", text: "No backups yet." }));
+      for (const b of bs.slice(0, 30)) {
+        blist.append(el("button", { text: "Restore " + b.time + (b.name.startsWith("daily") ? " (daily)" : ""), onclick: async () => {
+          if (!confirm("Go back to the backup from " + b.time + "? (Today's data is backed up first.)")) return;
+          await stopSaves(); // an in-flight save must not undo the restore
+          const r = await fetch("/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: b.name }) });
+          if (r.ok) { await reloadData(); toast("Restored " + b.time); } else toast("Restore failed", true);
+        } }));
+      }
+    }).catch(() => { blist.textContent = "Could not list backups."; });
+  },
+  exit(body) {
+    body.append(el("p", { text: "Closes VoiceBox and shows the normal desktop. To come back, double-tap Start VoiceBox on the desktop (or restart the Surface)." }));
+    body.append(srow("", el("button", { class: "danger big", text: "Exit to desktop", onclick: async () => {
+      if (!confirm("Close VoiceBox and go to the desktop? Use the Start VoiceBox icon to come back.")) return;
+      await saveNow();
+      fetch("/exit-kiosk", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    } })));
+  },
+};
+// one list of things (phrases of a tile, family names, about-me lines): edit in place, move, delete, add
+function phraseEditor(body, cat, what) {
+  if (!cat.phrases.length) body.append(srow("", el("span", { class: "small", text: "Nothing here yet." })));
+  cat.phrases.forEach((ph, i) => {
+    const move = (d) => { const j = i + d; if (j < 0 || j >= cat.phrases.length) return; [cat.phrases[i], cat.phrases[j]] = [cat.phrases[j], cat.phrases[i]]; saveSoon(); renderSettings(); };
+    body.append(el("div", { class: "srow item" }, el("div", { class: "slabel", text: String(i + 1) }), el("div", { class: "ctl" },
+      textInput(ph, (v) => { cat.phrases[i] = v; saveSoon(); }),
+      el("button", { text: "▲", "aria-label": "Move up", onclick: () => move(-1) }),
+      el("button", { text: "▼", "aria-label": "Move down", onclick: () => move(1) }),
+      el("button", { class: "danger", text: "Delete", onclick: () => { if (confirm(`Delete "${ph}"?`)) { cat.phrases.splice(i, 1); saveSoon(50); renderSettings(); } } }))));
+  });
+  const add = textInput("", () => {}, what === "name" ? "Type a name" : what === "line" ? "New line" : "New phrase");
+  const label = what === "name" ? "Add name" : what === "line" ? "Add line" : "Add phrase";
+  body.append(srow(label, add, el("button", { class: "speak", text: label, onclick: () => {
+    const v = add.value.trim();
+    if (!v) return;
+    if (!cat.phrases.includes(v)) { cat.phrases.push(v); saveSoon(50); toast("Added " + v); }
+    renderSettings();
   } })));
-  body.append(el("div", { class: "small", text: "Tip: tap a box above, then type with the keys below or the keyboard cover." }));
-  body.scrollTop = keepScroll;
 }
 function renderSKeys() {
   renderKeyboard($("#skeys"), skMode, (k) => {

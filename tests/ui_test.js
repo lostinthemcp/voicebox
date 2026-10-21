@@ -207,8 +207,34 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.mouse.down(); await page.waitForTimeout(3300); await page.mouse.up();
     await page.waitForSelector("#settings:not([hidden])");
     await page.waitForSelector('#sbody button.on.voice:has(span:text-is("Ryan"))'); // friendly voice names, Ryan until the family picks
-    await shot("9-settings");
+    // one section at a time, tabs on the left, Done always there, the keyboard only while typing
+    const tabs = await page.$$eval("#snav button", (b) => b.map((x) => x.textContent));
+    assert.deepStrictEqual(tabs, ["Voice & sound", "Screen", "Phrases", "Family names", "About me", "Updates", "Backups", "Exit to desktop"]);
+    assert(await page.isHidden("#skeys"), "keyboard shown with no text box in use");
+    const sfits = async (where) => {
+      const bad = await page.evaluate(() => [...document.querySelectorAll("#settings button")].filter((e) => {
+        const r = e.getBoundingClientRect();
+        return r.width && (r.right > innerWidth + 1 || e.scrollWidth > e.clientWidth + 2);
+      }).map((e) => e.textContent.trim().slice(0, 30)));
+      assert.deepStrictEqual(bad, [], `${w}x${h} settings ${where}: clipped`);
+    };
+    const tab = async (name, n) => {
+      await page.click(`#snav button:text-is("${name}")`);
+      await page.waitForFunction((t) => document.querySelector("#sbody h2").textContent === t, name);
+      await sfits(name);
+      assert(await page.isVisible("#sdone"), "Done not visible in " + name);
+      if (w === 1280) { await page.waitForTimeout(300); await shot(`9${n}-settings-${name.toLowerCase().replace(/[^a-z]+/g, "-")}`); }
+    };
+    await tab("Voice & sound", "a");
+    await tab("Screen", "b");
+    await tab("Phrases", "c");
+    await tab("Family names", "d");
+    await tab("About me", "e");
+    await tab("Updates", "f");
+    await tab("Backups", "g");
+    await tab("Exit to desktop", "h");
     // updates (server answers faked here; the real flow is in test_server.py): offer, then a plain failure message
+    await page.click('#snav button:text-is("Updates")');
     const fake = (status, obj) => (r) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(obj) });
     await page.route("**/update/check", fake(200, { current: "a".repeat(40), latest: "b".repeat(40), available: true, can_undo: false }));
     await page.route("**/update/install", fake(502, { error: "Could not reach GitHub (no internet?). Nothing was changed. Try again later." }));
@@ -219,11 +245,19 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.waitForFunction(() => document.querySelector("#ustat").textContent.includes("Nothing was changed"));
     await page.unroute("**/update/check"); await page.unroute("**/update/install");
     const name = w === 1280 ? "Mike" : "Anna";
+    await page.click('#snav button:text-is("Family names")');
     await page.click('#sbody input[placeholder="Type a name"]');
+    await page.waitForSelector("#skeys:not([hidden])");
+    const fb = await page.locator('#sbody input[placeholder="Type a name"]').boundingBox();
+    const kb = await page.locator("#skeys").boundingBox();
+    assert(fb.y + fb.height <= kb.y + 1, "the keyboard covers the text box");
     for (const ch of name) await page.click(`#skeys button:text-is("${ch.toUpperCase()}")`);
     await page.click('#sbody button:text-is("Add name")');
+    await page.waitForFunction(() => document.querySelector("#skeys").hidden, null, { timeout: 3000 }); // gone when not typing
+    assert(await page.isVisible(`#sbody input[type=text] >> nth=-2`), "added name listed");
+    await page.click('#snav button:text-is("Screen")');
     await page.click('#sbody button:text-is("Right side")');
-    await page.click('#sbody button:text-is("Done")');
+    await page.click("#sdone");
     await page.waitForTimeout(1200); // let the save land
     await shot("10-right-side");
 
