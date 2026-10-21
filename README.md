@@ -14,7 +14,8 @@ cd ~ && wget -qO- https://github.com/lostinthemcp/voicebox/archive/refs/heads/ma
 
 ## What is on the screen
 
-- **Down one side (left by default):** YES, NO, NOT SURE, HOME and HOLD FOR HELP.
+- **Down one side (left by default):** YES, NO, NOT SURE, **HOLD ON** (orange: says "Hold on. Give me a
+  minute, I'm typing."), HOME and HOLD FOR HELP.
   These are on every screen.
 - **Across the top:** a big **SPEAK** button with backspace and CLEAR right next to it, then the message
   he is typing (a long message scrolls).
@@ -22,7 +23,8 @@ cd ~ && wget -qO- https://github.com/lostinthemcp/voicebox/archive/refs/heads/ma
 - **Home screen:** big tiles. The first one, **I love you**, says it straight away. The others (Needs,
   Feelings, Medical, Hospital Staff, Talk, Ribbing, People, Keyboard, Pain, History, About Me) open a
   page of phrases: tap a phrase to say it straight away. A quick double tap never hits the next screen.
-  **More ▶** shows the next page when a tile has more than 9 phrases.
+  A long list scrolls: swipe up and down, or drag the wide yellow bar on the right edge. A row cut off at
+  the bottom means there is more. A swipe never says anything; only a tap does.
 - **Keyboard:** type a word, and the yellow buttons above the keys guess the word he is spelling.
   When no word is started, they guess the next word. It learns his words as he uses it.
   The keyboard cover works too. **Enter = SPEAK**.
@@ -34,7 +36,7 @@ cd ~ && wget -qO- https://github.com/lostinthemcp/voicebox/archive/refs/heads/ma
   times, then says "I need help". A quick bump does nothing.
 
 A half-typed message is kept, even if the tablet restarts. Nothing clears by itself.
-YES, NO, NOT SURE and HELP work even while VoiceBox is still starting.
+YES, NO, NOT SURE, HOLD ON and HELP work even while VoiceBox is still starting.
 If no voice works at all, the words are shown big on the screen with an OK button, so he can point at them.
 
 ## Install (once, with internet)
@@ -86,6 +88,8 @@ VoiceBox can update itself. It needs the internet (Wi-Fi) for a few minutes.
 
 Phrases, names, history, settings and backups are never changed by an update.
 If something goes wrong before the new version is in place, nothing changes and Settings says so.
+If a new version is put in but keeps failing to start, VoiceBox goes back to the previous version by itself
+(after 3 tries, about 10 seconds).
 Updates only come from the reviewed `stable` version on GitHub, never from work in progress.
 
 ## Getting out and back in
@@ -140,6 +144,8 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
   progress). Kokoro runs as one long-lived `kokoro_worker.py` (in `~/.local/share/voicebox/kokoro/venv`,
   2 threads, nice 10). If Kokoro is busy, slow or down, `/speak` answers with Piper Ryan instead.
 - `static/`: the page (plain HTML, CSS and JS, no build step). `static/words.txt` is the starter word list.
+- `bootguard.sh`: runs before every server start (installed outside `app/`, so updates never replace it);
+  rolls back to `app.prev` if an updated server fails 3 starts in a row.
 - `kiosk.sh`: the browser loop. `install.sh` / `uninstall.sh`: setup.
 - Tests: `python3 tests/test_server.py` (data, backups, recovery, security checks, Piper), and
   `tests/ui_test.js` (Playwright click-through; takes the screenshots in `screenshots/`).

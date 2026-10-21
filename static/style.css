@@ -41,8 +41,10 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .yes { background: var(--yes); }
 .no { background: var(--no); }
 .yes:active { background: #2fd156; } .no:active { background: #ff4b50; }
-#notsure { flex: 1; font-size: 1.7rem; }
-#home { flex: 1.1; font-size: 2rem; border-color: #fff; }
+#notsure { flex: 0.85; font-size: 1.7rem; }
+#holdon { flex: 1; font-size: 2rem; background: #ff9f1a; color: #000; border: none; } /* amber: not YES, NO or HELP */
+#holdon:active { background: #ffc266; }
+#home { flex: 0.85; font-size: 1.8rem; border-color: #fff; }
 #home.here { color: #888; border-color: var(--edge); }
 
 .hold { position: relative; overflow: hidden; touch-action: none; } /* a shaky finger must not cancel the hold */
@@ -71,7 +73,12 @@ svg.icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-wid
 .head { display: flex; gap: var(--gap); height: 8vh; flex: 0 0 auto; align-items: stretch; }
 .head .title { flex: 1; font-size: 2rem; color: var(--accent); align-self: center; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .head button { min-width: 11rem; font-size: 1.5rem; }
-.phrases { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); gap: var(--gap); }
+.phrases { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 18vh; gap: var(--gap); align-content: start; }
+/* scrolling lists: finger scroll with momentum, and a wide bright scrollbar a shaky hand can grab */
+.scroll { overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain; padding-right: 0.6vw; }
+.scroll::-webkit-scrollbar { width: 44px; }
+.scroll::-webkit-scrollbar-track { background: #333; border-radius: 22px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--accent); border: 4px solid #333; border-radius: 22px; min-height: 80px; }
 .phrases button { font-size: 2rem; padding: 0.3em; line-height: 1.15; min-height: 0; }
 
 #suggest { display: flex; gap: var(--gap); height: 12vh; flex: 0 0 auto; }

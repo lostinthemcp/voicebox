@@ -7,7 +7,8 @@ const URL = process.argv[2] || "http://127.0.0.1:8765";
 const SHOTS = path.join(__dirname, "..", "screenshots");
 
 (async () => {
-  const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] });
+  // show scrollbars like the real kiosk (headless hides them by default)
+  const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"], ignoreDefaultArgs: ["--hide-scrollbars"] });
   const errors = [];
   for (const [w, h] of [[1280, 853], [1920, 1280]]) {
     const page = await browser.newPage({ viewport: { width: w, height: h }, hasTouch: true });
@@ -27,6 +28,7 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
       const bad = await page.evaluate(() => [...document.querySelectorAll("#app button, #msg")].filter((e) => {
         const r = e.getBoundingClientRect();
         if (!r.width) return false;
+        if (e.closest(".scroll")) return e.scrollHeight > e.clientHeight + 2; // rows below the fold are fine in a list
         return r.right > innerWidth + 1 || r.bottom > innerHeight + 1 || e.scrollHeight > e.clientHeight + 2;
       }).map((e) => e.textContent.trim().slice(0, 30)));
       assert.deepStrictEqual(bad, [], `${w}x${h} ${where}: clipped or off-screen`);
@@ -39,6 +41,11 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await tile("I love you");
     await said("I love you");
     assert(await page.isVisible(".tiles"), "love tile left the home screen");
+    await page.click("#holdon");
+    await said("Hold on. Give me a minute, I'm typing.");
+    const col = await page.$$eval("#controls button", (b) => b.map((x) => [x.id, x.getBoundingClientRect().height]));
+    const hgt = Object.fromEntries(col);
+    assert(hgt.yes >= Math.max(hgt.notsure, hgt.holdon, hgt.home) && hgt.no >= hgt.holdon, "YES/NO must stay biggest: " + JSON.stringify(hgt));
     await shot("1-home");
 
     // keyboard tile: type, prediction, physical keys, Enter = SPEAK
@@ -75,15 +82,40 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await pc('.phrases button:text-is("I\'m thirsty")');
     await said("thirsty");
 
-    // Hospital Staff: paging
+    // Hospital Staff: one scrolling list, 3 across, the third row cut off to show there is more
     await home();
     await tile("Hospital Staff");
-    assert.strictEqual(await page.locator(".phrases button").count(), 9);
-    await pc(".head .more");
-    await fits("staff p2");
-    await shot("4-staff-page2");
-    await pc('.phrases button:text-is("I need suction")');
-    await said("suction");
+    assert.strictEqual(await page.locator(".phrases button").count(), 21);
+    const rows = await page.evaluate(() => { const g = document.querySelector(".phrases"), b = g.querySelector("button");
+      return (g.clientHeight + parseFloat(getComputedStyle(g).rowGap)) / (b.offsetHeight + parseFloat(getComputedStyle(g).rowGap)); });
+    assert(rows > 2.3 && rows < 2.7, "visible rows: " + rows);
+    await fits("staff");
+    // a finger swipe scrolls and says nothing
+    const before0 = await page.textContent("#lastsaid");
+    await page.waitForTimeout(450);
+    const lb = await page.locator(".phrases").boundingBox();
+    const cdp = await page.context().newCDPSession(page);
+    const tx = lb.x + lb.width / 2, ty = lb.y + lb.height * 0.85;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: tx, y: ty }] });
+    for (let i = 1; i <= 12; i++) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: tx, y: ty - 25 * i }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForTimeout(800);
+    assert(await page.$eval(".phrases", (g) => g.scrollTop) > 100, "swipe did not scroll");
+    assert.strictEqual(await page.textContent("#lastsaid"), before0, "a swipe spoke");
+    // a shaky press that slides 15 px is a scroll, not a press; one that slides 4 px is a press
+    const sb = await page.locator('.phrases button:text-is("I need my glasses")');
+    await sb.scrollIntoViewIfNeeded();
+    const bb = await sb.boundingBox();
+    await page.mouse.move(bb.x + 30, bb.y + 30); await page.mouse.down(); await page.mouse.move(bb.x + 30, bb.y + 45); await page.mouse.up();
+    await page.waitForTimeout(300);
+    assert.strictEqual(await page.textContent("#lastsaid"), before0, "a 15 px slide spoke");
+    await shot("4-staff-scrolled");
+    await page.mouse.move(bb.x + 30, bb.y + 30); await page.mouse.down(); await page.mouse.move(bb.x + 34, bb.y + 30); await page.mouse.up();
+    await said("my glasses");
+    // far down the list: scroll to the last phrase and tap it
+    await page.locator('.phrases button:text-is("Please explain what you are doing before you do it.")').scrollIntoViewIfNeeded();
+    await pc('.phrases button:text-is("Please explain what you are doing before you do it.")');
+    await said("before you do it");
 
     // pain flow
     await home();
@@ -184,8 +216,9 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await said(name);
     await home();
     await tile("Feelings");
-    await pc(".head .more");
-    assert(await page.isVisible('.phrases button:text-is("My pain is 7 out of 10, in my right leg.")'), "starred phrase not kept");
+    const starred = page.locator('.phrases button:text-is("My pain is 7 out of 10, in my right leg.")');
+    await starred.scrollIntoViewIfNeeded();
+    assert(await starred.isVisible(), "starred phrase not kept");
     // half-typed message survives reload
     await page.keyboard.type("half typ");
     await page.waitForTimeout(1800);
@@ -216,12 +249,14 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
       speechSynthesis.speak = (u) => window.__spoken.push(u.text);
     });
     await page.goto(URL);
+    await page.click("#holdon"); // wired before the data loads, like YES/NO
+    await page.waitForTimeout(750);
     await page.click("#yes");
     const hb = await page.locator("#help").boundingBox();
     await page.mouse.move(hb.x + 20, hb.y + 20);
     await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
     await page.waitForFunction(() => window.__spoken.includes("I need help"), null, { timeout: 8000 });
-    assert.deepStrictEqual(await page.evaluate(() => window.__spoken), ["Yes", "I need help"]);
+    assert.deepStrictEqual(await page.evaluate(() => window.__spoken), ["Hold on. Give me a minute, I'm typing.", "Yes", "I need help"]);
     await page.evaluate(() => { speechSynthesis.getVoices = () => []; });
     await page.waitForTimeout(750);
     await page.click("#no");

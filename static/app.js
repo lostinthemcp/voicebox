@@ -6,7 +6,7 @@ let D = null;               // data from server
 let msg = "";               // the message being built
 let lastCleared = "";       // for CLEAR -> UNDO
 let screen = "home";
-let page = 0;
+let shown = "";           // the screen drawn last (to keep a list's scroll place on redraw)
 let painLevel = null;
 let kbMode = "abc";
 let skMode = "abc";
@@ -85,7 +85,7 @@ async function play(text, split = false) {
       if (i + 1 < parts.length) { next = fetchWav(parts[i + 1]); next.catch(() => {}); }
       const url = URL.createObjectURL(blob);
       audio = new Audio(url);
-      const ended = new Promise((res) => { audio.onended = audio.onerror = res; });
+      const ended = new Promise((res) => { audio.onended = audio.onerror = audio.onpause = res; }); // pause = a newer tap
       await audio.play();
       await ended;
       URL.revokeObjectURL(url);
@@ -275,14 +275,21 @@ function icon(name) {
   svg.appendChild(path);
   return svg;
 }
-function go(s) { screen = s; page = 0; painLevel = null; renderPanel(); }
+function go(s) { screen = s; painLevel = null; renderPanel(); }
 function head(p, title, extra = []) {
   const h = el("div", { class: "head" }, el("h2", { class: "title", text: title }), ...extra);
   p.appendChild(h);
 }
 function renderPanel() {
   const p = $("#panel");
+  const old = p.querySelector(".scroll"), keep = shown === screen && old ? old.scrollTop : 0;
+  shown = screen;
   p.innerHTML = "";
+  renderScreen(p);
+  const list = p.querySelector(".scroll");
+  if (list) list.scrollTop = keep; // History redraws after each tap: stay where he was
+}
+function renderScreen(p) {
   ignoreUntil = performance.now() + 400;
   $("#home").classList.toggle("here", screen === "home");
   if (screen === "home") return renderHome(p);
@@ -291,21 +298,22 @@ function renderPanel() {
   if (screen === "history") return renderHistory(p);
   const cat = D.categories.find((c) => c.id === screen);
   if (!cat) return go("home");
-  const pages = Math.max(1, Math.ceil(cat.phrases.length / 9));
-  page = Math.min(page, pages - 1);
-  const nav = pages > 1 ? [
-    el("button", { text: "◀ Back", onclick: () => { page = (page + pages - 1) % pages; renderPanel(); } }),
-    el("button", { class: "more", text: `More ▶ (${page + 1}/${pages})`, onclick: () => { page = (page + 1) % pages; renderPanel(); } }),
-  ] : [];
-  head(p, cat.name, nav);
+  head(p, cat.name);
   p.querySelector(".head").prepend(icon(cat.icon));
   if (!cat.phrases.length) {
     p.append(el("div", { class: "empty", text: "Nothing here yet. Family: hold the gear (top corner) for 3 seconds to add some." }));
     return;
   }
-  const g = el("div", { class: "phrases" }); // 3 x 3 = 9 per page
-  for (const ph of cat.phrases.slice(page * 9, page * 9 + 9)) g.append(el("button", { text: ph, onclick: () => say(ph) }));
+  const g = el("div", { class: "phrases scroll" }); // 3 across; rows sized so 2.5 show and the cut row says "more below"
+  for (const ph of cat.phrases) g.append(el("button", { text: ph, onclick: () => say(ph) }));
   p.appendChild(g);
+  sizeRows();
+}
+function sizeRows() {
+  const g = $("#panel .phrases");
+  if (!g) return;
+  const gap = parseFloat(getComputedStyle(g).rowGap) || 0;
+  g.style.gridAutoRows = Math.max(60, (g.clientHeight - 2 * gap) / 2.5) + "px";
 }
 function tileList() {
   const tiles = [{ id: "love", icon: "heart", name: "I love you", says: "I love you" }]; // one tap, no sub-screen
@@ -363,7 +371,7 @@ function renderPain(p) {
 function renderHistory(p) {
   head(p, "History - tap to say again, ★ to save");
   if (!D.history.length) { p.append(el("div", { class: "empty", text: "Nothing said yet." })); return; }
-  const box = el("div", { class: "hist" });
+  const box = el("div", { class: "hist scroll" });
   for (const h of D.history.slice(0, 200)) {
     const d = new Date(h.t);
     const today = new Date().toDateString() === d.toDateString();
@@ -380,7 +388,7 @@ function pickCategory(text) {
   const m = $("#modal");
   m.innerHTML = "";
   const box = document.createElement("div");
-  box.className = "box";
+  box.className = "box scroll";
   const p = document.createElement("p");
   p.textContent = `Save "${text}" to:`;
   const g = document.createElement("div");
@@ -705,7 +713,17 @@ async function start() {
   $("#yes").onclick = () => say("Yes");
   $("#no").onclick = () => say("No");
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
+  $("#holdon").onclick = () => say("Hold on. Give me a minute, I'm typing.");
   holdButton($("#help"), 1000, helpAlarm);
+  // a finger that moved 10 px or more was scrolling a list, not pressing a button
+  let downAt = null, moved = 0;
+  for (const area of [$("#panel"), $("#modal")]) {
+    area.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; moved = 0; }, true);
+    area.addEventListener("pointermove", (e) => { if (downAt) moved = Math.max(moved, Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1])); }, true);
+    area.addEventListener("scroll", () => { if (downAt) moved = 99; }, true);
+    area.addEventListener("click", (e) => { if (downAt && moved >= 10) { e.stopPropagation(); e.preventDefault(); } downAt = null; }, true);
+  }
+  addEventListener("resize", sizeRows);
   $("#panel").addEventListener("click", (e) => {
     const now = performance.now();
     if (now < ignoreUntil || (now < suggestUntil && e.target.closest("#suggest"))) { e.stopPropagation(); e.preventDefault(); }

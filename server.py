@@ -40,7 +40,7 @@ KOKORO_FILES = {"kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc3772
                 "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"}
 CACHE = os.path.join(HOME, "cache")
 CACHE_CAP = 300 * 1024 * 1024
-CORE = ("Yes", "No", "I'm not sure, ask me another way.", "I need help")  # the always-there buttons
+CORE = ("Yes", "No", "I'm not sure, ask me another way.", "Hold on. Give me a minute, I'm typing.", "I need help")  # the always-there buttons
 EXIT_FLAG = os.path.join(HOME, "exit-kiosk")
 AI_KEY = os.path.join(HOME, "ai_key")
 KEEP_ROLLING = 200
@@ -68,7 +68,7 @@ DEFAULT_DATA = {
             "Please call my nurse", "When is the doctor coming?", "What is this medicine for?",
             "Please explain that again, slowly.", "Please call my family", "Please raise the bed",
             "Please lower the bed", "Please turn the light off", "Please turn the TV on",
-            "Please turn the TV off", "I need suction", "I need my glasses", "What time is it?",
+            "Please turn the TV off", "I need my glasses", "What time is it?",
             "What day is it?", "Am I having a test today?", "I want to talk to the doctor",
             "Please write it down for me", "Please wash your hands", "I need to rest now",
             "Please talk to me, not about me.", "Please tell me what's happening.",
@@ -306,6 +306,7 @@ class KokoroWorker:
         if not self.busy.acquire(blocking=False):
             return "busy"
         ev = threading.Event()
+        self.answer, self.since = ev, time.time()  # from here on, _finish() is the only way the slot is freed
         try:
             if self.proc is None or self.proc.poll() is not None:
                 if time.time() - self.started < 60:
@@ -314,15 +315,11 @@ class KokoroWorker:
                 self.proc = subprocess.Popen([KOKORO_PY, KOKORO_WORKER, KOKORO_DIR], stdin=subprocess.PIPE,
                                              stdout=subprocess.PIPE, text=True, bufsize=1)
                 threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
-            self.answer, self.since = ev, time.time()
             self.proc.stdin.write(json.dumps({"text": text, "voice": voice, "speed": speed, "out": out}) + "\n")
             self.proc.stdin.flush()
         except Exception as e:
             sys.stderr.write("kokoro: %s\n" % e)
-            if self.answer is ev:
-                self._finish()
-            else:
-                self.busy.release()
+            self._finish()  # a no-op if the reader already freed it
             return "down"
         if not ev.wait(wait):
             return "slow"
@@ -362,6 +359,12 @@ def prune_cache():
         try:
             st = os.stat(p)
             files.append((st.st_mtime, st.st_size, p))
+        except OSError:
+            pass
+    for p in glob.glob(os.path.join(CACHE, "*", "*.tmp")):  # left by a killed render or a full disk
+        try:
+            if time.time() - os.path.getmtime(p) > 600:
+                os.remove(p)
         except OSError:
             pass
     total = sum(f[1] for f in files)
@@ -407,6 +410,16 @@ def speak(text, rate, voice, wait):
 # ---------- pre-render: every phrase, in the chosen voice, on disk ----------
 prep = {"voice": "", "done": 0, "total": 0}
 prep_wake = threading.Event()
+prep_key = [None]
+
+
+def wake_prerender(d):
+    """Only when the voice, speed or phrases changed (every tap saves history; that must not restart it)."""
+    s = d.get("settings") or {}
+    key = hashlib.sha1(json.dumps([s.get("voice"), s.get("rate"), [c.get("phrases") for c in d["categories"]]]).encode()).digest()
+    if key != prep_key[0]:
+        prep_key[0] = key
+        prep_wake.set()
 last_live = [0.0]  # time of the last tap; pre-render steps aside for it
 
 
@@ -607,7 +620,11 @@ def check_app(root, scratch):
     except py_compile.PyCompileError:
         raise UpdateError("The update has a broken server.py, so it was not used. Nothing was changed.")
     port = free_port()
-    env = dict(os.environ, VOICEBOX_HOME=os.path.join(scratch, "test-home"), VOICEBOX_PORT=str(port))
+    test_home = os.path.join(scratch, "test-home")
+    os.makedirs(test_home)
+    if os.path.exists(DATA):
+        shutil.copy2(DATA, test_home)  # a copy: the new version must load HIS data, not just the defaults
+    env = dict(os.environ, VOICEBOX_HOME=test_home, VOICEBOX_PORT=str(port))
     p = subprocess.Popen([sys.executable, "-I", os.path.join(root, "server.py")], env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     local = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -617,8 +634,9 @@ def check_app(root, scratch):
             if p.poll() is not None:
                 break
             try:
-                if valid(json.load(local.open("http://127.0.0.1:%d/data" % port, timeout=3))) \
-                        and b"<" in local.open("http://127.0.0.1:%d/" % port, timeout=3).read():
+                base = "http://127.0.0.1:%d/" % port
+                if valid(json.load(local.open(base + "data", timeout=3))) and b"<" in local.open(base, timeout=3).read() \
+                        and local.open(base + "app.js", timeout=3).read(1):
                     return
             except Exception:
                 continue
@@ -718,6 +736,17 @@ def swap_in(src, version):
         raise UpdateError("The update stopped half way (%s). Tap Undo last update, or run install.sh." % (e.strerror or e))
 
 
+PENDING = os.path.join(HOME, "update-pending")  # bootguard.sh puts app.prev back if the new version keeps crashing
+HEALTHY_AFTER = float(os.environ.get("VOICEBOX_HEALTHY_AFTER", "30"))
+
+
+def mark_healthy():
+    try:
+        os.remove(PENDING)
+    except OSError:
+        pass
+
+
 def restart_soon():
     def bye():
         with lock:  # never in the middle of writing data.json
@@ -737,7 +766,7 @@ def run_update(path):
             cur, latest = installed_version(), latest_version()
             return {"current": cur, "latest": latest, "available": cur != latest,
                     "can_undo": os.path.isdir(PREV), "previous": installed_version(PREV)}, 200
-        scratch = tempfile.mkdtemp(prefix="update-", dir=HOME)
+        scratch = tempfile.mkdtemp(prefix="update-tmp-", dir=HOME)
         notes = []
         if path == "/update/undo":
             if not os.path.isdir(PREV):
@@ -753,6 +782,8 @@ def run_update(path):
             check_app(root, scratch)
             notes = fetch_voices(root)
             swap_in(root, version)
+        with open(PENDING, "w") as f:
+            f.write("0\n")
         restart_soon()
         return {"ok": True, "version": version, "notes": notes}, 200
     except UpdateError as e:
@@ -821,7 +852,7 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/voices":
             return self.send_json(voices())
         if self.path == "/prepare":
-            return self.send_json(prep)
+            return self.send_json(dict(prep))
         if self.path == "/version":
             return self.send_json({"version": installed_version()})
         return super().do_GET()
@@ -841,7 +872,7 @@ class Handler(SimpleHTTPRequestHandler):
             except OSError as e:  # disk full or read-only: say so, the page keeps its copy and retries
                 sys.stderr.write("save failed: %s\n" % e)
                 return self.send_json({"error": "could not write data: %s" % e.strerror}, 507)
-            prep_wake.set()  # phrases or voice may have changed
+            wake_prerender(req)
             return self.send_json({"ok": True})
         if self.path == "/speak":
             text = str(req.get("text") or "").strip()[:1000]
@@ -898,6 +929,9 @@ def main():
     os.makedirs(HOME, exist_ok=True)
     load()  # recover a corrupt file at startup, not on first tap
     prune_cache()
+    healthy = threading.Timer(HEALTHY_AFTER, mark_healthy)  # up this long: the update (if any) is good
+    healthy.daemon = True
+    healthy.start()
     threading.Thread(target=prerender_loop, daemon=True).start()
     prep_wake.set()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)

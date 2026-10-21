@@ -308,7 +308,7 @@ class UpdateTest(Base):
         self.assertEqual(tree(self.app + ".prev"), old_app, "app.prev is the old app")
         self.assertTrue(os.access(os.path.join(self.app, "kiosk.sh"), os.X_OK))
         self.assertEqual(os.path.getsize(os.path.join(self.home, "piper", "en_US-fake-medium.onnx")), 1500000)
-        self.assertFalse(glob.glob(os.path.join(self.home, "update-*")), "temp files cleaned")
+        self.assertFalse(glob.glob(os.path.join(self.home, "update-tmp-*")), "temp files cleaned")
         self.assertFalse(glob.glob(os.path.join(self.home, "piper", "*.part")))
         self.start()
         self.assertEqual(self.req("/version")[1], {"version": self.NEW})
@@ -350,7 +350,7 @@ class UpdateTest(Base):
             self.assertFalse(os.path.exists(self.app + ".prev"), why)
             self.assertEqual(os.listdir(os.path.join(self.home, "piper")), [], why + ": no voices before checks pass")
         self.assertFalse(glob.glob(os.path.join(self.home, "..", "evil.txt")))
-        self.assertFalse(glob.glob(os.path.join(self.home, "update-*")))
+        self.assertFalse(glob.glob(os.path.join(self.home, "update-tmp-*")))
         pathlib.Path(self.tgz).write_bytes(b"not a tarball")
         self.assertEqual(self.req("/update/install", {})[0], 502)
         os.remove(self.tgz)
@@ -358,6 +358,48 @@ class UpdateTest(Base):
         self.assertEqual(self.req("/update/undo", {})[0], 400)  # nothing to undo yet
         self.assertEqual(tree(self.app), app)
         self.assertEqual(pathlib.Path(self.home, "data.json").read_bytes(), data)
+
+    def test_update_must_load_his_data(self):
+        """The test run uses a copy of the real data.json, so a version that chokes on it is refused."""
+        crash = b"import os, sys\nif 'crashme' in open(os.path.join(os.environ['VOICEBOX_HOME'], 'data.json')).read(): sys.exit(1)\n"
+        self.make_tarball({"server.py": crash + pathlib.Path(ROOT, "server.py").read_bytes()})
+        self.start()
+        _, d = self.req("/data")
+        self.req("/data", dict(d, words={"crashme": 1}))
+        app = tree(self.app)
+        code, j = self.req("/update/install", {})
+        self.assertEqual(code, 502)
+        self.assertIn(b"did not start in a test run", j)
+        self.assertEqual(tree(self.app), app)
+
+    def test_bootguard_rolls_back_a_crashing_update(self):
+        self.extra_env = dict(self.extra_env, VOICEBOX_HEALTHY_AFTER="1")
+        self.make_tarball()
+        self.start()
+        old_app = tree(self.app)
+        self.assertEqual(self.req("/update/install", {})[0], 200)
+        self.wait_exit()
+        pending = os.path.join(self.home, "update-pending")
+        self.assertTrue(os.path.exists(pending))
+        # a healthy new version clears the marker after VOICEBOX_HEALTHY_AFTER seconds
+        self.start()
+        time.sleep(1.8)
+        self.assertFalse(os.path.exists(pending))
+        self.stop()
+        # a broken one: systemd keeps starting it, bootguard.sh puts app.prev back on the 4th start
+        new_app = tree(self.app)
+        pathlib.Path(pending).write_text("0\n")
+        guard = os.path.join(self.home, "bootguard.sh")
+        shutil.copy2(os.path.join(ROOT, "bootguard.sh"), guard)
+        for n in (1, 2, 3):
+            subprocess.run(["bash", guard], check=True)
+            self.assertEqual(tree(self.app), new_app, n)
+        subprocess.run(["bash", guard], check=True)
+        self.assertEqual(tree(self.app), old_app)
+        self.assertEqual(tree(self.app + ".prev"), new_app)
+        self.assertFalse(os.path.exists(pending))
+        subprocess.run(["bash", guard], check=True)  # no marker: does nothing
+        self.assertEqual(tree(self.app), old_app)
 
     def test_update_endpoints_guarded(self):
         self.make_tarball()
@@ -420,11 +462,11 @@ class SpeechTest(Base):
         self.assertEqual(self.req("/data", SMALL)[0], 200)  # Michael picked, but Kokoro is not installed
         self.assertFalse([v for v in self.req("/voices")[1] if v["id"].startswith("kokoro-")])
         p = self.wait_prepared()
-        self.assertEqual((p["voice"], p["total"]), ("en_US-ryan-medium", 6))  # 4 big buttons + 2 phrases, in Ryan
-        self.assertEqual(len(self.cached("en_US-ryan-medium")), 6)
+        self.assertEqual((p["voice"], p["total"]), ("en_US-ryan-medium", 7))  # 5 big buttons + 2 phrases, in Ryan
+        self.assertEqual(len(self.cached("en_US-ryan-medium")), 7)
         code, wav = self.req("/speak", {"text": "Something new.", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)
         self.assertEqual((code, wav[:4]), (200, b"RIFF"))
-        self.assertEqual(len(self.cached("en_US-ryan-medium")), 7)
+        self.assertEqual(len(self.cached("en_US-ryan-medium")), 8)
         self.stop()
         os.remove(os.path.join(self.home, "piper"))  # no Piper at all now: the disk cache still speaks
         self.start()
@@ -445,9 +487,9 @@ class SpeechTest(Base):
         self.assertIn({"id": "kokoro-am_michael", "name": "Michael"}, self.req("/voices")[1])
         self.req("/data", SMALL)
         p = self.wait_prepared()
-        self.assertEqual((p["voice"], p["total"]), ("kokoro-am_michael", 10))  # + Ryan copies of the 4 big buttons
-        self.assertEqual(len(self.cached("kokoro-am_michael")), 6)
-        self.assertEqual(len(self.cached("en_US-ryan-medium")), 4)
+        self.assertEqual((p["voice"], p["total"]), ("kokoro-am_michael", 12))  # + Ryan copies of the 5 big buttons
+        self.assertEqual(len(self.cached("kokoro-am_michael")), 7)
+        self.assertEqual(len(self.cached("en_US-ryan-medium")), 5)
         fake_len = 44 + 4800
         self.assertEqual(len(self.req("/speak", {"text": "Alpha one", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)[1]), fake_len)
         # too slow: Piper answers within the wait, and the Kokoro version lands in the cache afterwards
