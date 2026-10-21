@@ -81,14 +81,17 @@ fi
 step "App files"
 mkdir -p "$APP"
 # copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
-for f in server.py kiosk.sh; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f"; done
+for f in server.py kiosk.sh; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
 chmod +x "$APP/kiosk.sh"
 rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$APP/static.old" \
-  && { [ ! -d "$APP/static" ] || mv "$APP/static" "$APP/static.old"; } && mv "$APP/static.new" "$APP/static" && rm -rf "$APP/static.old"
+  && { [ ! -d "$APP/static" ] || mv "$APP/static" "$APP/static.old"; } && mv "$APP/static.new" "$APP/static" && rm -rf "$APP/static.old" \
+  || { echo "Could not copy the app pages (disk full?). Fix that and run install.sh again."; exit 1; }
+[ -s "$APP/static/index.html" ] || { echo "App page missing after copy. Run install.sh again."; exit 1; }
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
 
 # Names stay out of the public repo: pass them at install, e.g. VOICEBOX_PEOPLE="Ann,Bob" bash install.sh
 if [ -n "${VOICEBOX_PEOPLE:-}" ]; then
+  systemctl --user stop voicebox.service 2>/dev/null  # only one writer of data.json at a time
   VOICEBOX_PEOPLE="$VOICEBOX_PEOPLE" python3 -c '
 import os, sys
 sys.path.insert(0, sys.argv[1]); import server
@@ -116,7 +119,7 @@ EOF
 systemctl --user daemon-reload && systemctl --user enable voicebox.service >/dev/null 2>&1 && systemctl --user restart voicebox.service \
   && ok "voicebox.service running" || warn "could not start voicebox.service (log out and in, then run install.sh again)"
 sleep 2
-python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/data', timeout=5)" 2>/dev/null \
+python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/data', timeout=5); assert b'<' in urllib.request.urlopen('http://127.0.0.1:8765/', timeout=5).read()" 2>/dev/null \
   && ok "server answers on http://127.0.0.1:8765" || warn "server not answering yet: journalctl --user -u voicebox"
 
 step "Kiosk start at login + Start VoiceBox icon"
@@ -172,10 +175,10 @@ gs org.cinnamon.settings-daemon.plugins.power lock-on-suspend false
 gs org.cinnamon.settings-daemon.plugins.power lid-close-ac-action "'nothing'"
 gs org.cinnamon.settings-daemon.plugins.power lid-close-battery-action "'nothing'"
 gs org.cinnamon.settings-daemon.plugins.power lid-close-suspend-with-external-monitor false
-gs org.cinnamon.settings-daemon.plugins.power button-power "'interactive'"
+gs org.cinnamon.settings-daemon.plugins.power button-power "'nothing'"
 gs org.cinnamon.settings-daemon.plugins.power button-suspend "'nothing'"
 sudo mkdir -p /etc/systemd/logind.conf.d
-printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\nHandleSuspendKey=ignore\n' \
+printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\nHandleSuspendKey=ignore\nHandlePowerKey=ignore\n' \
   | sudo tee /etc/systemd/logind.conf.d/70-voicebox.conf >/dev/null
 gs org.cinnamon hotcorner-layout "['expo:false:0', 'scale:false:0', 'scale:false:0', 'desktop:false:0']"
 [ "$(gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null)" = false ] \

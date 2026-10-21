@@ -40,7 +40,7 @@ keeps the screen from locking or sleeping, and turns the volume up to 100%.
 It is safe to run again, for example after copying in a newer version. Phrases and data are never touched.
 
 **Keep the Surface plugged in.** Sleep is turned off, so it will run the battery down.
-Closing the Type Cover does not put it to sleep. The power button asks before shutting down.
+Closing the Type Cover does not put it to sleep, and a bump on the power button does nothing. To shut down, exit to the desktop and use the menu. If the screen is ever stuck or blank, hold the power button for 10 seconds, then press it again: it starts back up into VoiceBox by itself.
 
 ## Settings (for family)
 

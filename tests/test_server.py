@@ -145,6 +145,12 @@ class ServerTest(unittest.TestCase):
         code, d3 = self.req("/data")
         self.assertEqual(d3["words"], {"rescued": 9})
         self.assertTrue(glob.glob(os.path.join(self.home, "data.json.corrupt-*")), "corrupt file kept")
+        # a deleted data.json also comes back from the newest backup, not from defaults
+        self.stop()
+        os.remove(os.path.join(self.home, "data.json"))
+        self.start()
+        code, d4 = self.req("/data")
+        self.assertEqual(d4["words"], {"rescued": 9})
 
     def test_restore(self):
         self.start()
