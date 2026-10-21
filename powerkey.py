@@ -54,15 +54,19 @@ def screen_is_off():
 
 
 def toggle(flag):
-    if screen_is_off():
+    # Decide by our own dark flag, not by "xset q": X also sees the power button, and its press can wake the
+    # screen before we look. Runs on the key's RELEASE, so that release can't wake a screen we just turned off.
+    if os.path.exists(flag):
         try:
             os.remove(flag)
         except OSError:
             pass
-        subprocess.run(["xset", "dpms", "force", "on"], timeout=5)
+        if screen_is_off():
+            subprocess.run(["xset", "dpms", "force", "on"], timeout=5)
         log("screen on")
     else:
         open(flag, "w").close()  # first: kiosk.sh must not wake it up again
+        time.sleep(0.5)  # let the finger and X settle before blanking
         subprocess.run(["xset", "dpms", "force", "off"], timeout=5)
         log("screen off")
 
@@ -101,8 +105,8 @@ def main():
             fds[fd] = buf[n:]
             for off in range(0, n, EVENT.size):
                 _, _, typ, code, value = EVENT.unpack_from(buf, off)
-                if typ == EV_KEY and code == KEY_POWER and value == 1 and time.time() - last > 0.7:
-                    last = time.time()  # one press, even if the button bounces
+                if typ == EV_KEY and code == KEY_POWER and value == 0 and time.time() - last > 0.7:
+                    last = time.time()  # one release = one tap, even if the button bounces
                     try:
                         toggle(flag)
                     except (OSError, subprocess.TimeoutExpired) as e:
