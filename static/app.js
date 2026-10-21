@@ -188,7 +188,35 @@ function key(val, label, onKey, cls) {
 
 // ---------- screens ----------
 // screen: "home" | "keyboard" | "pain" | "history" | a category id
-const SPECIAL = { keyboard: ["⌨️", "Keyboard"], pain: ["\u{1F915}", "Pain"], history: ["\u{1F552}", "History"] };
+const SPECIAL = { keyboard: ["keyboard", "Keyboard"], pain: ["bolt", "Pain"], history: ["clock", "History"] };
+// plain bold line icons (24x24), drawn in the page so they never depend on fonts
+const ICONS = {
+  cup: "M5 8h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z M16 9h2a2 2 0 0 1 0 4h-2 M8 3v2 M12 3v2",
+  heart: "M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.5-7 10-7 10z",
+  cross: "M9 3h6v6h6v6h-6v6H9v-6H3V9h6z",
+  hospital: "M4 21V7l8-4 8 4v14 M2 21h20 M10 21v-4h4v4 M12 7v5 M9.5 9.5h5",
+  talk: "M4 5h16v11H10l-5 4v-4H4z",
+  people: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6 M16 5a3 3 0 0 1 0 6 M18 14c2 .7 3 2.8 3 6",
+  card: "M3 5h18v14H3z M8 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M5 16c.5-1.8 1.6-2.5 3-2.5s2.5.7 3 2.5 M14 9h4 M14 13h4",
+  keyboard: "M2 6h20v12H2z M6 10h1 M10 10h1 M14 10h1 M18 10h1 M7 14h10",
+  bolt: "M13 2L4 14h7l-1 8 9-12h-7z",
+  clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M12 7v5l3 3",
+  star: "M12 3l2.8 5.8 6.2.9-4.5 4.4 1 6.2L12 17.4 6.5 20.3l1-6.2L3 9.7l6.2-.9z",
+  house: "M3 11l9-8 9 8 M5 9v12h14V9 M10 21v-6h4v6",
+  bed: "M3 18V7 M3 14h18v4 M21 14v-2a3 3 0 0 0-3-3h-7v5 M7 11.5h.01",
+  fire: "M12 22c4 0 7-2.7 7-7 0-4-3-6-4-10-2 2-3 4-3 6-1-1-2-2-2-4-3 3-5 5.5-5 8 0 4.3 3 7 7 7z",
+};
+function icon(name) {
+  if (!ICONS[name]) return el("span", { class: "icon", text: name || "" }); // older data may hold an emoji
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("class", "icon");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", ICONS[name]);
+  svg.appendChild(path);
+  return svg;
+}
 function go(s) { screen = s; page = 0; painLevel = null; renderPanel(); }
 function head(p, title, extra = []) {
   const h = el("div", { class: "head" }, el("h2", { class: "title", text: title }), ...extra);
@@ -210,7 +238,8 @@ function renderPanel() {
     el("button", { text: "◀ Back", onclick: () => { page = (page + pages - 1) % pages; renderPanel(); } }),
     el("button", { class: "more", text: `More ▶ (${page + 1}/${pages})`, onclick: () => { page = (page + 1) % pages; renderPanel(); } }),
   ] : [];
-  head(p, (cat.icon ? cat.icon + " " : "") + cat.name, nav);
+  head(p, cat.name, nav);
+  p.querySelector(".head").prepend(icon(cat.icon));
   if (!cat.phrases.length) {
     p.append(el("div", { class: "empty", text: "Nothing here yet. Family: hold the gear (top corner) for 3 seconds to add some." }));
     return;
@@ -236,7 +265,7 @@ function renderHome(p) {
   g.style.gridTemplateColumns = `repeat(${tiles.length > 10 ? 6 : 5}, 1fr)`;
   for (const t of tiles) {
     g.append(el("button", { class: t.id === "keyboard" ? "kbd" : "", "data-tile": t.id, onclick: () => go(t.id) },
-      el("span", { class: "icon", text: t.icon }), el("span", { text: t.name })));
+      icon(t.icon), el("span", { text: t.name })));
   }
   p.appendChild(g);
 }
@@ -251,7 +280,7 @@ const PLACES = ["head", "chest", "stomach", "back", "left arm", "right arm", "le
 function renderPain(p) {
   const g = el("div", { class: "pain" });
   if (painLevel === null) {
-    head(p, "\u{1F915} How bad is the pain? 0 = none, 10 = worst");
+    head(p, "How bad is the pain? 0 = none, 10 = worst");
     for (let i = 0; i <= 10; i++) {
       const b = el("button", { text: String(i), onclick: () => { painLevel = i; renderPanel(); } });
       b.style.background = `hsl(${120 - i * 12}, 85%, 50%)`;
@@ -273,7 +302,7 @@ function renderPain(p) {
   p.append(g);
 }
 function renderHistory(p) {
-  head(p, "\u{1F552} History - tap to say again, ★ to save");
+  head(p, "History - tap to say again, ★ to save");
   if (!D.history.length) { p.append(el("div", { class: "empty", text: "Nothing said yet." })); return; }
   const box = el("div", { class: "hist" });
   for (const h of D.history.slice(0, 200)) {
@@ -438,7 +467,14 @@ async function renderSettings() {
   const cat = D.categories.find((c) => c.id === settingsCat);
   if (cat) {
     body.append(el("div", { class: "bar" }, el("span", { text: "Tile name:" }), textInput(cat.name, (v) => { cat.name = v || cat.name; saveSoon(); }),
-      el("span", { text: "Picture:" }), textInput(cat.icon || "", (v) => { cat.icon = v; saveSoon(); }, "emoji")));
+      ));
+    const pics = el("div", { class: "bar" }, el("span", { text: "Picture:" }));
+    for (const n of Object.keys(ICONS)) {
+      const b = el("button", { class: (cat.icon || "star") === n ? "on pic" : "pic", "aria-label": n, onclick: () => { cat.icon = n; saveSoon(); renderSettings(); } });
+      b.append(icon(n));
+      pics.append(b);
+    }
+    body.append(pics);
     cat.phrases.forEach((ph, i) => {
       const move = (d) => { const j = i + d; if (j < 0 || j >= cat.phrases.length) return; [cat.phrases[i], cat.phrases[j]] = [cat.phrases[j], cat.phrases[i]]; saveSoon(); renderSettings(); };
       body.append(el("div", { class: "row" },
@@ -465,7 +501,7 @@ async function renderSettings() {
   const newCat = textInput("", () => {}, "New tile name");
   body.append(el("div", { class: "bar" }, newCat, el("button", { text: "Add tile", onclick: () => {
     const v = newCat.value.trim(); if (!v) return;
-    const c = { id: slug(v), name: v, icon: "\u2b50", phrases: [] }; D.categories.push(c); settingsCat = c.id; saveSoon(50); renderSettings();
+    const c = { id: slug(v), name: v, icon: "star", phrases: [] }; D.categories.push(c); settingsCat = c.id; saveSoon(50); renderSettings();
   } })));
 
   body.append(el("h2", { text: "Data and backups" }));
