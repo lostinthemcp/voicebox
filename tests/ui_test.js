@@ -155,6 +155,16 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.mouse.down(); await page.waitForTimeout(3300); await page.mouse.up();
     await page.waitForSelector("#settings:not([hidden])");
     await shot("9-settings");
+    // updates (server answers faked here; the real flow is in test_server.py): offer, then a plain failure message
+    const fake = (status, obj) => (r) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(obj) });
+    await page.route("**/update/check", fake(200, { current: "a".repeat(40), latest: "b".repeat(40), available: true, can_undo: false }));
+    await page.route("**/update/install", fake(502, { error: "Could not reach GitHub (no internet?). Nothing was changed. Try again later." }));
+    await page.click('#sbody button:text-is("Check for updates")');
+    await page.waitForSelector("#sbody button.install");
+    assert.strictEqual(await page.textContent("#ustat"), "Update available.");
+    await page.click("#sbody button.install");
+    await page.waitForFunction(() => document.querySelector("#ustat").textContent.includes("Nothing was changed"));
+    await page.unroute("**/update/check"); await page.unroute("**/update/install");
     const name = w === 1280 ? "Mike" : "Anna";
     await page.click('#sbody input[placeholder="Type a name"]');
     for (const ch of name) await page.click(`#skeys button:text-is("${ch.toUpperCase()}")`);

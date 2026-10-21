@@ -11,8 +11,9 @@ VB="$HOME/.local/share/voicebox"
 APP="$VB/app"
 PIPER="$VB/piper"
 PIPER_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
-HF="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US"
-VOICES="ryan/medium/en_US-ryan-medium joe/medium/en_US-joe-medium"
+HF="https://huggingface.co/rhasspy/piper-voices/resolve/main/en"
+# the voice list lives in voices.txt (the in-app updater reads the same file)
+VOICES="$(grep -Ev '^\s*(#|$)' "$SRC/voices.txt" 2>/dev/null || echo "en_US/ryan/medium/en_US-ryan-medium en_US/joe/medium/en_US-joe-medium")"
 SUMMARY=()
 ok()   { SUMMARY+=("OK    $*"); echo "  ok: $*"; }
 warn() { SUMMARY+=("CHECK $*"); echo "  !! $*"; }
@@ -63,7 +64,7 @@ else
 fi
 for v in $VOICES; do
   name="$(basename "$v")"
-  for ext in onnx onnx.json; do
+  for ext in onnx.json onnx; do  # json first: the server lists a voice as soon as its .onnx appears
     f="$PIPER/$name.$ext"
     if [ -s "$f" ] && { [ "$ext" = onnx.json ] || [ "$(stat -c %s "$f")" -gt 1000000 ]; }; then continue; fi
     curl -fL --retry 3 -o "$f.part" "$HF/$v.$ext?download=true" && mv "$f.part" "$f" || { rm -f "$f.part"; warn "could not download $name.$ext"; }
@@ -81,12 +82,14 @@ fi
 step "App files"
 mkdir -p "$APP"
 # copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
-for f in server.py kiosk.sh; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
+for f in server.py kiosk.sh voices.txt; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
 chmod +x "$APP/kiosk.sh"
 rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$APP/static.old" \
   && { [ ! -d "$APP/static" ] || mv "$APP/static" "$APP/static.old"; } && mv "$APP/static.new" "$APP/static" && rm -rf "$APP/static.old" \
   || { echo "Could not copy the app pages (disk full?). Fix that and run install.sh again."; exit 1; }
 [ -s "$APP/static/index.html" ] || { echo "App page missing after copy. Run install.sh again."; exit 1; }
+# the in-app updater compares this with the stable branch; "unknown" just means "update available"
+{ git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown; } >"$APP/VERSION.new" && mv -f "$APP/VERSION.new" "$APP/VERSION"
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
 
 # Names stay out of the public repo: pass them at install, e.g. VOICEBOX_PEOPLE="Ann,Bob" bash install.sh

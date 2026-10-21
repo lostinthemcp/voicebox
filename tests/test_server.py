@@ -5,6 +5,7 @@ Run: python3 tests/test_server.py   (uses a temp folder, never touches real data
 """
 import datetime
 import glob
+import io
 import json
 import os
 import pathlib
@@ -12,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -30,7 +32,7 @@ def free_port():
     return p
 
 
-class ServerTest(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="vbtest-")
         self.port = free_port()
@@ -40,9 +42,12 @@ class ServerTest(unittest.TestCase):
         self.stop()
         shutil.rmtree(self.home, ignore_errors=True)
 
+    script = os.path.join(ROOT, "server.py")
+    extra_env = {}
+
     def start(self):
-        env = dict(os.environ, VOICEBOX_HOME=self.home, VOICEBOX_PORT=str(self.port))
-        self.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "server.py")], env=env,
+        env = dict(os.environ, VOICEBOX_HOME=self.home, VOICEBOX_PORT=str(self.port), **self.extra_env)
+        self.proc = subprocess.Popen([sys.executable, self.script], env=env,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         for _ in range(50):
             try:
@@ -69,6 +74,8 @@ class ServerTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.read()
 
+
+class ServerTest(Base):
     def test_defaults_save_load(self):
         self.start()
         code, d = self.req("/data")
@@ -205,6 +212,176 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(wav[:4], b"RIFF")
         self.assertGreater(len(wav), 20000)
         self.assertIn("en_US-ryan-medium", self.req("/voices")[1])
+
+
+def tree(d):
+    out = {}
+    for base, _, files in os.walk(d):
+        for f in files:
+            p = os.path.join(base, f)
+            out[os.path.relpath(p, d)] = pathlib.Path(p).read_bytes()
+    return out
+
+
+class UpdateTest(Base):
+    """Self-update from local fake tarballs (file:// URLs), never the internet."""
+    OLD = "a" * 40
+    NEW = "b" * 40
+
+    def setUp(self):
+        super().setUp()
+        self.app = os.path.join(self.home, "app")
+        os.makedirs(self.app)
+        for f in ("server.py", "kiosk.sh"):
+            shutil.copy2(os.path.join(ROOT, f), self.app)
+        shutil.copytree(os.path.join(ROOT, "static"), os.path.join(self.app, "static"))
+        pathlib.Path(self.app, "VERSION").write_text(self.OLD + "\n")
+        os.makedirs(os.path.join(self.home, "piper"))
+        self.work = tempfile.mkdtemp(prefix="vbupd-")
+        self.vdir = os.path.join(self.work, "voices")
+        os.makedirs(os.path.join(self.vdir, "en_US/fake/medium"))
+        pathlib.Path(self.vdir, "en_US/fake/medium/en_US-fake-medium.onnx").write_bytes(b"x" * 1500000)
+        pathlib.Path(self.vdir, "en_US/fake/medium/en_US-fake-medium.onnx.json").write_text('{"audio": {}}')
+        self.tgz = os.path.join(self.work, "stable.tar.gz")
+        pathlib.Path(self.work, "sha").write_text(self.NEW + "\n")
+        self.script = os.path.join(self.app, "server.py")
+        self.extra_env = {"VOICEBOX_UPDATE_URL": "file://" + self.tgz,
+                          "VOICEBOX_UPDATE_CHECK_URL": "file://" + os.path.join(self.work, "sha"),
+                          "VOICEBOX_VOICES_URL": "file://" + self.vdir + "/"}
+
+    def tearDown(self):
+        super().tearDown()
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def make_tarball(self, change=None, extra=None):
+        """A GitHub-like tarball of the repo with index.html marked; change/extra tweak it."""
+        files = {"server.py": pathlib.Path(ROOT, "server.py").read_bytes(),
+                 "kiosk.sh": pathlib.Path(ROOT, "kiosk.sh").read_bytes(),
+                 "voices.txt": b"# test\nen_US/fake/medium/en_US-fake-medium\n../../evil\n"}
+        for f in os.listdir(os.path.join(ROOT, "static")):
+            files["static/" + f] = pathlib.Path(ROOT, "static", f).read_bytes()
+        files["static/index.html"] += b"<!-- v2 -->"
+        files.update(change or {})
+        with tarfile.open(self.tgz, "w:gz", format=tarfile.PAX_FORMAT, pax_headers={"comment": self.NEW}) as t:
+            for name, data in files.items():
+                if data is None:
+                    continue
+                ti = tarfile.TarInfo("voicebox-stable/" + name)
+                ti.size = len(data)
+                ti.mode = 0o755 if name.endswith(".sh") else 0o644
+                t.addfile(ti, io.BytesIO(data))
+            for ti in extra or []:
+                t.addfile(ti, None)
+
+    def wait_exit(self):
+        self.proc.wait(10)  # the server restarts itself by exiting (systemd Restart=always)
+        self.proc = None
+
+    def test_check(self):
+        self.make_tarball()
+        self.start()
+        code, j = self.req("/update/check", {})
+        self.assertEqual(code, 200)
+        self.assertEqual((j["current"], j["latest"], j["available"], j["can_undo"]), (self.OLD, self.NEW, True, False))
+        self.assertEqual(self.req("/version")[1], {"version": self.OLD})
+        pathlib.Path(self.app, "VERSION").write_text(self.NEW)
+        self.assertFalse(self.req("/update/check", {})[1]["available"])
+        os.remove(os.path.join(self.app, "VERSION"))
+        self.assertTrue(self.req("/update/check", {})[1]["available"], "unknown version means update available")
+
+    def test_install_then_undo(self):
+        self.make_tarball()
+        self.start()
+        _, d = self.req("/data")
+        self.req("/data", dict(d, words={"keep": 1}))
+        before_data = pathlib.Path(self.home, "data.json").read_bytes()
+        before_backups = tree(os.path.join(self.home, "backups"))
+        old_app = tree(self.app)
+        code, j = self.req("/update/install", {})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(j["version"], self.NEW)
+        self.assertEqual(j["notes"], ["New voice: en_US-fake-medium"])
+        self.wait_exit()
+        self.assertIn(b"<!-- v2 -->", pathlib.Path(self.app, "static/index.html").read_bytes())
+        self.assertEqual(pathlib.Path(self.app, "VERSION").read_text().strip(), self.NEW)
+        self.assertEqual(tree(self.app + ".prev"), old_app, "app.prev is the old app")
+        self.assertTrue(os.access(os.path.join(self.app, "kiosk.sh"), os.X_OK))
+        self.assertEqual(os.path.getsize(os.path.join(self.home, "piper", "en_US-fake-medium.onnx")), 1500000)
+        self.assertFalse(glob.glob(os.path.join(self.home, "update-*")), "temp files cleaned")
+        self.assertFalse(glob.glob(os.path.join(self.home, "piper", "*.part")))
+        self.start()
+        self.assertEqual(self.req("/version")[1], {"version": self.NEW})
+        self.assertEqual(self.req("/data")[1]["words"], {"keep": 1})
+        self.assertEqual(pathlib.Path(self.home, "data.json").read_bytes(), before_data, "data.json untouched")
+        self.assertEqual(tree(os.path.join(self.home, "backups")), before_backups, "backups untouched")
+        new_app = tree(self.app)
+        code, j = self.req("/update/undo", {})
+        self.assertEqual(code, 200, j)
+        self.wait_exit()
+        self.assertEqual(tree(self.app), old_app, "undo restores the old app exactly")
+        self.assertEqual(tree(self.app + ".prev"), new_app, "undo keeps the newer one, so it can be redone")
+        self.start()
+        self.assertEqual(self.req("/version")[1], {"version": self.OLD})
+        self.assertEqual(pathlib.Path(self.home, "data.json").read_bytes(), before_data)
+
+    def test_bad_updates_change_nothing(self):
+        sym = tarfile.TarInfo("voicebox-stable/static/link")
+        sym.type, sym.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        climb = tarfile.TarInfo("voicebox-stable/../../evil.txt")
+        other = tarfile.TarInfo("other/evil.txt")
+        cases = [
+            ("missing app.js", {"static/app.js": None}, None),
+            ("broken python", {"server.py": b"def (:\n"}, None),
+            ("server that does not start", {"server.py": b"import sys\nsys.exit(1)\n"}, None),
+            ("symlink", None, [sym]),
+            ("path traversal", None, [climb]),
+            ("second top folder", None, [other]),
+        ]
+        self.start()
+        app, data = tree(self.app), pathlib.Path(self.home, "data.json").read_bytes()
+        for why, change, extra in cases:
+            self.make_tarball(change, extra)
+            code, j = self.req("/update/install", {})
+            self.assertEqual(code, 502, why)
+            self.assertIn("Nothing was changed", j.decode(), why)
+            self.assertIsNone(self.proc.poll(), why + ": server must keep running")
+            self.assertEqual(tree(self.app), app, why)
+            self.assertFalse(os.path.exists(self.app + ".prev"), why)
+            self.assertEqual(os.listdir(os.path.join(self.home, "piper")), [], why + ": no voices before checks pass")
+        self.assertFalse(glob.glob(os.path.join(self.home, "..", "evil.txt")))
+        self.assertFalse(glob.glob(os.path.join(self.home, "update-*")))
+        pathlib.Path(self.tgz).write_bytes(b"not a tarball")
+        self.assertEqual(self.req("/update/install", {})[0], 502)
+        os.remove(self.tgz)
+        self.assertIn("Nothing was changed", self.req("/update/install", {})[1].decode())
+        self.assertEqual(self.req("/update/undo", {})[0], 400)  # nothing to undo yet
+        self.assertEqual(tree(self.app), app)
+        self.assertEqual(pathlib.Path(self.home, "data.json").read_bytes(), data)
+
+    def test_update_endpoints_guarded(self):
+        self.make_tarball()
+        self.start()
+        for path in ("/update/check", "/update/install", "/update/undo"):
+            self.assertEqual(self.req(path, {}, {"Origin": "http://evil.example"})[0], 403, path)
+            self.assertEqual(self.req(path, {}, {"Host": "evil.example"})[0], 403, path)
+            self.assertEqual(self.req(path, {}, {"Content-Type": "text/plain"})[0], 403, path)
+        self.assertIsNone(self.proc.poll())
+        self.assertFalse(os.path.exists(self.app + ".prev"))
+
+    def test_redirects_only_to_known_sites(self):
+        sys.path.insert(0, ROOT)
+        import server
+        self.assertTrue(server.host_ok("https://codeload.github.com/x"))
+        self.assertTrue(server.host_ok("https://us.aws.cdn.hf.co/x"))
+        for bad in ("http://github.com/x", "https://evil.example/x", "https://github.com.evil.example/x",
+                    "https://evilhf.co/x", "file:///etc/passwd"):
+            self.assertFalse(server.host_ok(bad), bad)
+
+
+class RepoCopyTest(Base):
+    def test_no_update_from_repo_checkout(self):
+        self.start()  # server.py run from the repo, not ~/.local/share/voicebox/app
+        self.assertEqual(self.req("/update/install", {})[0], 400)
 
 
 if __name__ == "__main__":

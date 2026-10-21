@@ -70,6 +70,20 @@ Tap a box, then type with the keys at the bottom of the Settings screen (or the 
 Tap **Done** when finished. Changes save by themselves. If the gear turns red, saving is failing
 (for example the disk is full). Settings says why at the top, and everything stays on screen while it keeps trying.
 
+## Updating
+
+VoiceBox can update itself. It needs the internet (Wi-Fi) for a few minutes.
+
+1. Hold the gear 3 seconds to open Settings, scroll down to **Updates**.
+2. Tap **Check for updates**. It says **Up to date** or **Update available**.
+3. If there is one, tap **Install update**. It says "Updating...", then VoiceBox restarts by itself
+   and the screen comes back. Keep the Surface on and plugged in while it works.
+4. If the new version is worse, tap **Undo last update**. It goes back to the version before.
+
+Phrases, names, history, settings and backups are never changed by an update.
+If something goes wrong before the new version is in place, nothing changes and Settings says so.
+Updates only come from the reviewed `stable` version on GitHub, never from work in progress.
+
 ## Getting out and back in
 
 - **To get to the desktop:** hold the gear 3 seconds, then Settings → **Exit to desktop** → OK.
@@ -112,8 +126,10 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
 
 - `server.py`: Python 3 standard library only. It listens only on 127.0.0.1:8765. Endpoints:
   `GET/POST /data`, `POST /speak` (WAV from Piper; 503 means the page uses the browser voice),
-  `GET /backups`, `POST /restore`, `GET /voices`, `POST /exit-kiosk`, and `POST /ai`. `/ai` is an
+  `GET /backups`, `POST /restore`, `GET /voices`, `POST /exit-kiosk`, `GET /version`,
+  `POST /update/check|install|undo` (self-update from the `stable` branch tarball), and `POST /ai`. `/ai` is an
   unused hook that returns 501 and calls nothing. The offline core never depends on it.
+- `voices.txt`: the Piper voices that `install.sh` and the updater download.
 - `static/`: the page (plain HTML, CSS and JS, no build step). `static/words.txt` is the starter word list.
 - `kiosk.sh`: the browser loop. `install.sh` / `uninstall.sh`: setup.
 - Tests: `python3 tests/test_server.py` (data, backups, recovery, security checks, Piper), and

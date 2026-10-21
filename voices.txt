@@ -1,0 +1,7 @@
+# Piper voices to install (from huggingface.co/rhasspy/piper-voices, under en/).
+# install.sh and the in-app updater download any that are missing. One per line.
+en_US/ryan/medium/en_US-ryan-medium
+en_US/joe/medium/en_US-joe-medium
+en_US/ryan/high/en_US-ryan-high
+en_US/hfc_male/medium/en_US-hfc_male-medium
+en_US/norman/medium/en_US-norman-medium
