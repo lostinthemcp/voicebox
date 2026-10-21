@@ -67,14 +67,21 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* privat
 // (the browser voice on that box is silent). Only a real error or 503 falls back.
 // The big buttons are always in the server's startup cache: if even they take 2 s, the server is hung,
 // so they go straight to the browser voice / big text instead of waiting 20 s.
-const CORE = new Set(["Yes", "No", "I'm not sure, ask me another way.", "Hold on. Give me a minute, I'm typing.", "I need help"]);
+const CORE = new Set(["Yes", "No", "I'm not sure, ask me another way.", "Hold on, give me a minute.", "I need help"]);
 let waitingFor = 0;
-function fetchWav(text) {
+// "Fast voice for typing" (on unless the family turns it off): typed text always uses a quick Piper voice
+// (Ryan, or Joe/Norman when one of those is chosen), even when a Kokoro voice is chosen for the buttons
+const FAST = ["en_US-ryan-medium", "en_US-joe-medium", "en_US-norman-medium"];
+const fastVoice = (v) => (FAST.includes(v) ? v : "en_US-ryan-medium");
+// his own volume, 30-100%: the system volume is kept at 100% by kiosk.sh, so this is the only control,
+// and it can never go so low that he is silent by accident
+const vol = () => Math.min(100, Math.max(30, Number(settings().volume) || 100)) / 100;
+function fetchWav(text, voice) {
   const s = settings(), ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), CORE.has(text) ? 2000 : 20000);
   document.body.classList.toggle("waiting", ++waitingFor > 0);
   return fetch("/speak", { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, rate: s.rate, voice: s.voice }) })
+    body: JSON.stringify({ text, rate: s.rate, voice: voice || s.voice }) })
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); })
     .finally(() => { clearTimeout(t); document.body.classList.toggle("waiting", --waitingFor > 0); });
 }
@@ -96,6 +103,7 @@ async function showBattery() {
 function playBlob(blob) {
   const url = URL.createObjectURL(blob);
   audio = new Audio(url);
+  audio.volume = vol();
   const a = audio;
   return new Promise((res) => {
     a.onended = () => res("ended");
@@ -111,7 +119,9 @@ async function play(text, split = false) {
   if (audio) { audio.pause(); audio = null; }
   try { speechSynthesis.cancel(); } catch (e) { /* none */ }
   const parts = split ? (text.match(/[^.!?]+[.!?]*/g) || [text]).map((x) => x.trim()).filter(Boolean) : [text];
-  let next = fetchWav(parts[0]);
+  const voice = split && settings().fastTyping !== false ? fastVoice(settings().voice) : "";
+  const fetchWavV = (t) => fetchWav(t, voice);
+  let next = fetchWavV(parts[0]);
   for (let i = 0; i < parts.length; i++) {
     let blob;
     try { blob = await next; } catch (e) {
@@ -119,10 +129,10 @@ async function play(text, split = false) {
       return;
     }
     if (my !== speechSeq) return; // he already tapped something newer
-    if (i + 1 < parts.length) { next = fetchWav(parts[i + 1]); next.catch(() => {}); }
+    if (i + 1 < parts.length) { next = fetchWavV(parts[i + 1]); next.catch(() => {}); }
     let r = await playBlob(blob);
     if (r === "error" && my === speechSeq) {
-      try { r = await playBlob(await fetchWav(parts[i])); } catch (e) { r = "error"; }
+      try { r = await playBlob(await fetchWavV(parts[i])); } catch (e) { r = "error"; }
     }
     if (my !== speechSeq || r === "paused") return;
     if (r === "error") showBig(parts[i]);
@@ -133,7 +143,7 @@ function fallbackSpeak(text) {
     if (!window.speechSynthesis || !speechSynthesis.getVoices().length) throw new Error("no voices");
     const u = new SpeechSynthesisUtterance(text);
     u.rate = settings().rate || 1;
-    u.volume = 1;
+    u.volume = vol();
     u.onerror = (e) => { if (e.error !== "canceled" && e.error !== "interrupted") showBig(text); };
     // a stalled browser voice fires no error: if it has not started in 3 s, show the text
     const my = speechSeq; let started = false;
@@ -475,7 +485,7 @@ function chime() {
       o.frequency.value = f;
       const s = t0 + rep * 1.0 + i * 0.2;
       g.gain.setValueAtTime(0.0001, s);
-      g.gain.exponentialRampToValueAtTime(0.6, s + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.6 * Math.max(0.8, vol()), s + 0.02); // HELP: never under 80%
       g.gain.exponentialRampToValueAtTime(0.0001, s + 0.19);
       o.connect(g).connect(actx.destination);
       o.start(s);
@@ -550,6 +560,13 @@ async function renderSettings() {
       onclick: () => { s.side = side; applySettings(); saveSoon(); renderSettings(); } }));
   }
   body.append(sideBar);
+  const fastBar = el("div", { class: "bar" }, el("span", { text: "Fast voice for typing:" }));
+  for (const on of [true, false]) {
+    fastBar.append(el("button", { class: (s.fastTyping !== false) === on ? "on" : "", text: on ? "On" : "Off",
+      onclick: () => { s.fastTyping = on; saveSoon(); renderSettings(); } }));
+  }
+  fastBar.append(el("span", { class: "small", text: "On: typed messages use Ryan (or Joe/Norman) so they are quick." }));
+  body.append(fastBar);
   const vbar = el("div", { class: "bar" }, el("span", { text: "Voice:" }));
   body.append(vbar);
   body.append(el("div", { class: "bar" }, el("button", { text: "Test voice", onclick: () => play("Hello. This is my voice. Is this speed okay?") })));
@@ -559,7 +576,9 @@ async function renderSettings() {
     const ids = vs.map((v) => v.id);
     for (const v of vs) {
       const on = ids.includes(s.voice) ? s.voice === v.id : v.id === "en_US-ryan-medium";
-      vbar.append(el("button", { class: on ? "on" : "", text: v.name, onclick: () => { s.voice = v.id; saveSoon(50); renderSettings(); } }));
+      const st = v.total && v.ready >= v.total ? "Ready" : on ? `Preparing ${v.ready} of ${v.total}` : `${v.ready} of ${v.total} ready`;
+      vbar.append(el("button", { class: on ? "on voice" : "voice", onclick: () => { s.voice = v.id; saveSoon(50); renderSettings(); } },
+        el("span", { text: v.name }), el("span", { class: "vstat", text: v.total ? st : "" })));
     }
   }).catch(() => {});
   showPrep();
@@ -723,7 +742,7 @@ async function reloadData() {
 // ---------- startup ----------
 function normalize(d) {
   d.words = d.words || {}; d.bigrams = d.bigrams || {}; d.history = d.history || [];
-  d.settings = Object.assign({ textSize: 1, rate: 1, voice: "", side: "left" }, d.settings || {});
+  d.settings = Object.assign({ textSize: 1, rate: 1, voice: "", side: "left", volume: 100, fastTyping: true }, d.settings || {});
   for (const c of d.categories) c.phrases = c.phrases || [];
   return d;
 }
@@ -731,6 +750,7 @@ function applySettings() {
   document.documentElement.style.setProperty("--scale", D.settings.textSize);
   document.body.classList.toggle("side-right", D.settings.side === "right");
   document.body.classList.toggle("side-left", D.settings.side !== "right");
+  $("#vol").value = Math.round(vol() * 100);
 }
 let toastT = null;
 function toast(t, bad) {
@@ -745,8 +765,13 @@ async function start() {
   $("#yes").onclick = () => say("Yes");
   $("#no").onclick = () => say("No");
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
-  $("#holdon").onclick = () => say("Hold on. Give me a minute, I'm typing.");
+  $("#holdon").onclick = () => say("Hold on, give me a minute.");
   holdButton($("#help"), 1000, helpAlarm);
+  $("#vol").oninput = () => {
+    const v = Math.max(30, Number($("#vol").value));
+    if (audio) audio.volume = v / 100;
+    if (D) { D.settings.volume = v; saveSoon(); }
+  };
   showBattery();
   setInterval(showBattery, 60000);
   // a finger that moved past Chrome's own tap slop (~15 px) inside a list was scrolling, not pressing;

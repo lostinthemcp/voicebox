@@ -211,7 +211,7 @@ class ServerTest(Base):
         self.assertEqual(code, 200)
         self.assertEqual(wav[:4], b"RIFF")
         self.assertGreater(len(wav), 20000)
-        self.assertIn({"id": "en_US-ryan-medium", "name": "Ryan"}, self.req("/voices")[1])
+        self.assertIn({"id": "en_US-ryan-medium", "name": "Ryan"}, [{"id": v["id"], "name": v["name"]} for v in self.req("/voices")[1]])
 
 
 def wav_bytes(n=4800):
@@ -525,6 +525,8 @@ class SpeechTest(Base):
         p = self.wait_prepared()
         self.assertEqual((p["voice"], p["total"]), ("en_US-ryan-medium", 7))  # 5 big buttons + 2 phrases, in Ryan
         self.assertEqual(len(self.cached("en_US-ryan-medium")), 7)
+        ryan = next(v for v in self.req("/voices")[1] if v["id"] == "en_US-ryan-medium")
+        self.assertEqual((ryan["ready"], ryan["total"]), (7, 7))  # Settings shows "Ready"
         code, wav = self.req("/speak", {"text": "Something new.", "rate": 1, "voice": "kokoro-am_michael"}, raw=True)
         self.assertEqual((code, wav[:4]), (200, b"RIFF"))
         self.assertEqual(len(self.cached("en_US-ryan-medium")), 8)
@@ -577,7 +579,7 @@ class SpeechTest(Base):
         pathlib.Path(worker).write_text(FAKE_WORKER)
         self.extra_env = {"VOICEBOX_KOKORO_WORKER": worker}
         self.start()
-        self.assertIn({"id": "kokoro-am_michael", "name": "Michael"}, self.req("/voices")[1])
+        self.assertIn({"id": "kokoro-am_michael", "name": "Michael"}, [{"id": v["id"], "name": v["name"]} for v in self.req("/voices")[1]])
         self.req("/data", SMALL)
         p = self.wait_prepared()
         self.assertEqual((p["voice"], p["total"]), ("kokoro-am_michael", 12))  # + Ryan copies of the 5 big buttons
@@ -665,6 +667,38 @@ class WorkerTest(Base):
         self.assertEqual(server.piper_wav("x", 1.0, "en_US-ryan-medium", low=True)[:8], b"RIFF%04d" % (os.nice(0) + 10))
         self.assertEqual(server.piper_wav("x", 1.0, "en_US-ryan-medium")[:8], b"RIFF%04d" % os.nice(0))
 
+    def test_kokoro_is_frozen_while_live_piper_runs(self):
+        self.fake_piper(2)  # the Piper worker takes 2 s for "zzslow"
+        self.stop()
+        kdir = os.path.join(self.home, "kokoro")
+        for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+            pathlib.Path(kdir, f).write_text("fake")
+        kw = os.path.join(self.home, "fake_kokoro.py")
+        pathlib.Path(kw).write_text("import os, sys\nopen(os.path.join(sys.argv[1], 'started.pid'), 'w').write(str(os.getpid()))\n"
+                                    + FAKE_WORKER.replace("time.sleep(5)", "time.sleep(30)"))
+        self.extra_env = dict(self.extra_env, VOICEBOX_KOKORO_WORKER=kw)
+        self.start()
+        self.req("/data", {"categories": [{"id": "people", "name": "People", "phrases": ["a slow one"]}],
+                           "settings": {"voice": "kokoro-am_michael", "rate": 1.0}})  # pre-render: Kokoro busy 30 s
+        pid_file = os.path.join(kdir, "started.pid")
+        for _ in range(100):
+            if os.path.exists(pid_file):
+                break
+            time.sleep(0.1)
+        kpid = int(pathlib.Path(pid_file).read_text())
+        state = lambda: pathlib.Path("/proc/%d/stat" % kpid).read_text().rsplit(")", 1)[1].split()[0]  # noqa: E731
+        import threading
+        res = {}
+        th = threading.Thread(target=lambda: res.update(r=self.req("/speak", {"text": "typed zzslow", "rate": 1,
+                                                                             "voice": "en_US-ryan-medium"}, raw=True)))
+        th.start()
+        time.sleep(1)
+        self.assertEqual(state(), "T", "Kokoro frozen while the live Piper request runs")
+        th.join(20)
+        self.assertEqual(res["r"][0], 200)
+        time.sleep(0.2)
+        self.assertNotEqual(state(), "T", "Kokoro goes on afterwards")
+
     def test_battery(self):
         power = os.path.join(self.home, "power")
         os.makedirs(os.path.join(power, "AC"))
@@ -678,6 +712,67 @@ class WorkerTest(Base):
         pathlib.Path(power, "BAT1", "status").write_text("Charging\n")
         self.assertTrue(self.req("/battery")[1]["plugged"])
 
+
+
+class PackTest(unittest.TestCase):
+    """Pre-rendered voice packs: sha256 checked, only flat <sha1>.wav clips, skipped under 1 GB free."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="vbpack-")
+        self.rel = os.path.join(self.home, "release")
+        self.root = os.path.join(self.home, "root")
+        os.makedirs(self.rel)
+        os.makedirs(self.root)
+        os.environ.update(VOICEBOX_HOME=self.home, VOICEBOX_PACKS_URL="file://" + self.rel + "/")
+        sys.path.insert(0, ROOT)
+        import importlib
+        import server
+        self.server = importlib.reload(server)
+
+    def tearDown(self):
+        for k in ("VOICEBOX_PACKS_URL", "VOICEBOX_MIN_FREE"):
+            os.environ.pop(k, None)
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def pack(self, members, voice="en_US-ryan-medium"):
+        import hashlib
+        f = "voicepack-%s.tar.gz" % voice
+        with tarfile.open(os.path.join(self.rel, f), "w:gz") as t:
+            for name, data in members:
+                ti = tarfile.TarInfo(name)
+                ti.size = len(data)
+                t.addfile(ti, io.BytesIO(data))
+        sha = hashlib.sha256(pathlib.Path(self.rel, f).read_bytes()).hexdigest()
+        pathlib.Path(self.root, "voicepacks.json").write_text(json.dumps(
+            {"tag": "voicepacks-abc1234", "packs": {voice: {"file": f, "sha256": sha, "size": 1}}}))
+        return sha
+
+    def test_good_pack(self):
+        yes = self.server.cache_path("en_US-ryan-medium", "Yes", 1.0)
+        self.pack([(os.path.basename(yes), wav_bytes())])
+        self.assertEqual(self.server.fetch_packs(self.root), ["Voice pack en_US-ryan-medium: 1 new clips"])
+        self.assertTrue(self.server.read_cache(yes))
+        self.assertEqual(self.server.fetch_packs(self.root), [], "the same pack is not fetched twice")
+
+    def test_bad_packs_change_nothing(self):
+        good = "a" * 40 + ".wav"
+        cases = [[("../" + good, wav_bytes())], [("sub/" + good, wav_bytes())], [("notes.txt", wav_bytes())],
+                 [(good, b"RIFF")]]  # traversal, folder, not a clip, an empty clip
+        for members in cases:
+            self.pack(members)
+            self.assertEqual(self.server.fetch_packs(self.root), ["Voice pack en_US-ryan-medium could not download (try again later)"], members[0][0])
+            self.assertFalse(glob.glob(os.path.join(self.home, "cache", "*", "*")), members[0][0])
+        self.pack([(good, wav_bytes())])
+        m = json.loads(pathlib.Path(self.root, "voicepacks.json").read_text())
+        m["packs"]["en_US-ryan-medium"]["sha256"] = "0" * 64
+        pathlib.Path(self.root, "voicepacks.json").write_text(json.dumps(m))
+        self.assertIn("could not download", self.server.fetch_packs(self.root)[0], "wrong sha256")
+        self.assertFalse(glob.glob(os.path.join(self.home, "cache", "*", "*")))
+
+    def test_no_room(self):
+        self.pack([("a" * 40 + ".wav", wav_bytes())])
+        self.server.MIN_FREE = 1 << 60
+        self.assertEqual(self.server.fetch_packs(self.root), ["Voice pack en_US-ryan-medium skipped: less than 1 GB free on the disk"])
 
 
 class InstallTest(unittest.TestCase):

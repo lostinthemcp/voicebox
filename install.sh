@@ -188,6 +188,16 @@ if [ -x "$KOK/venv/bin/python3" ] && [ -f "$KOK/kokoro-v1.0.onnx" ] && [ -f "$KO
   fi
 fi
 
+step "Voice packs (every default phrase, ready-made, in every voice)"
+if [ -f "$SRC/voicepacks.json" ]; then
+  # same code as the in-app updater: sha256 checked, safe unpack, skipped under 1 GB free
+  if packs="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import server; print("; ".join(server.fetch_packs(sys.argv[2])))' "$APP" "$SRC")"; then
+    case "$packs" in *"could not"*|*skipped*) warn "voice packs: $packs (VoiceBox makes the missing clips itself)" ;; *) ok "voice packs ${packs:-already in}" ;; esac
+  else
+    warn "voice packs did not download - VoiceBox makes the clips itself (slower at first)"
+  fi
+fi
+
 # Names stay out of the public repo: pass them at install, e.g. VOICEBOX_PEOPLE="Ann,Bob" bash install.sh
 if [ -z "${VOICEBOX_PEOPLE:-}" ] && [ -t 0 ]; then
   read -rp "Family names for the People tile, separated by commas (or just press Enter to skip): " VOICEBOX_PEOPLE

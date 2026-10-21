@@ -14,9 +14,11 @@ cd ~ && wget -qO- https://github.com/lostinthemcp/voicebox/archive/refs/heads/ma
 
 ## What is on the screen
 
-- **Down one side (left by default):** YES, NO, NOT SURE, **HOLD ON** (orange: says "Hold on. Give me a
-  minute, I'm typing."), HOME and HOLD FOR HELP.
+- **Down one side (left by default):** YES, NO, NOT SURE, **HOLD ON** (orange: says "Hold on, give me a
+  minute."), HOME and HOLD FOR HELP.
   These are on every screen.
+- **Top bar:** a wide **volume slider** (🔊). Slide the yellow knob; it never goes below 30%, so he can't be
+  silenced by accident (the HELP chime is always at least 80%). The tablet's own volume stays at 100%.
 - **Top corner, next to the gear:** the battery (for example 🔋87%⚡ while charging). Under 20% and not
   charging it turns red and says **PLUG IN**.
 - **Across the top:** a big **SPEAK** button with backspace and CLEAR right next to it, then the message
@@ -67,7 +69,11 @@ In Settings you can:
 - change the text size and the voice speed, pick the voice, and test it. Ryan is the voice until you pick another.
   After a change of voice (or new phrases) Settings shows "Preparing voice: 37 of 120 phrases": VoiceBox
   is recording every phrase ahead in that voice, so the buttons answer at once. Until it is done, a phrase
-  not ready yet is said in Ryan's voice. Typed messages are spoken a sentence at a time.
+  not ready yet is said in Ryan's voice. Each voice button shows **Ready** or how many phrases are ready.
+  Typed messages are spoken a sentence at a time.
+- **Fast voice for typing** (On by default): typed messages always use Ryan (or Joe/Norman if one of those
+  is the chosen voice), because the nicer Kokoro voices are too slow on the Surface for new text. The
+  buttons still use the chosen voice.
 - choose which side the big buttons are on (**Left side / Right side**)
 - **add family names**: type the name, tap **Add name**. Each name becomes a button on the People tile.
 - add, change, delete or reorder phrases on any tile (▲ ▼ moves a phrase)
@@ -153,6 +159,12 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
   `GET /backups`, `POST /restore`, `GET /voices`, `GET /prepare`, `POST /exit-kiosk`, `GET /version`,
   `POST /update/check|install|undo` (self-update from the `stable` branch tarball), and `POST /ai`. `/ai` is an
   unused hook that returns 501 and calls nothing. The offline core never depends on it.
+- `voicepacks.json` + `tools/build_voicepacks.py`: every default phrase and big button, ready-made in every
+  voice, as `voicepack-<voice>.tar.gz` assets of a GitHub release (tag `voicepacks-<content hash>`). The
+  updater and install.sh download them (sha256 checked, only flat `<sha1>.wav` clips, skipped under 1 GB
+  free) into `cache/<voice>/`, so the pre-render only makes his own phrases. Rebuild on LOKI with
+  `VOICEBOX_HOME=<home with piper/ and kokoro/> python3 tools/build_voicepacks.py <out>` after changing
+  default phrases or voices, upload, and commit the new `voicepacks.json`.
 - `voices.txt`: the voices shown in Settings (friendly name | Piper path or `kokoro <voice>`); `install.sh`
   and the updater download the missing ones.
 - Speech: every answer is cached on disk in `~/.local/share/voicebox/cache/<voice>/` (up to 300 MB, oldest
