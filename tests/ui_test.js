@@ -53,7 +53,7 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await said("I love you");
     assert(await page.isVisible(".tiles"), "love tile left the home screen");
     await page.click("#holdon");
-    await said("Hold on. Give me a minute, I'm typing.");
+    await said("Hold on, give me a minute.");
     const col = await page.$$eval("#controls button", (b) => b.map((x) => [x.id, x.getBoundingClientRect().height]));
     const hgt = Object.fromEntries(col);
     assert(hgt.yes >= Math.max(hgt.notsure, hgt.holdon, hgt.home) && hgt.no >= hgt.holdon, "YES/NO must stay biggest: " + JSON.stringify(hgt));
@@ -72,8 +72,17 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await pc('#suggest button:text-is("need")');
     await page.keyboard.type("water");
     assert.match(await page.textContent("#msg"), /^i need water$/);
+    // fast voice for typing: even with a Kokoro voice chosen for the buttons, typed text goes to Ryan
+    const bodies = [];
+    const onReq = (r) => { if (r.url().endsWith("/speak")) bodies.push(JSON.parse(r.postData())); };
+    page.on("request", onReq);
+    await page.evaluate(() => { D.settings.voice = "kokoro-am_michael"; }); // not saved: no Kokoro pre-render here
     await page.keyboard.press("Enter");
     await said("i need water");
+    await page.waitForFunction(() => !document.body.classList.contains("waiting"));
+    page.off("request", onReq);
+    await page.evaluate(() => { D.settings.voice = ""; });
+    assert.deepStrictEqual(bodies.map((b) => [b.text, b.voice]), [["i need water", "en_US-ryan-medium"]]);
     await page.waitForTimeout(800);
     await page.click("#clear");
     assert.strictEqual(await page.textContent("#clear"), "UNDO");
@@ -197,7 +206,7 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     assert(await page.isHidden("#settings"), "settings opened too early");
     await page.mouse.down(); await page.waitForTimeout(3300); await page.mouse.up();
     await page.waitForSelector("#settings:not([hidden])");
-    await page.waitForSelector('#sbody button.on:text-is("Ryan")'); // friendly voice names, Ryan until the family picks
+    await page.waitForSelector('#sbody button.on.voice:has(span:text-is("Ryan"))'); // friendly voice names, Ryan until the family picks
     await shot("9-settings");
     // updates (server answers faked here; the real flow is in test_server.py): offer, then a plain failure message
     const fake = (status, obj) => (r) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(obj) });
@@ -218,9 +227,23 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.waitForTimeout(1200); // let the save land
     await shot("10-right-side");
 
+    // volume slider: never under 30%, applied to the voice, kept after a reload
+    await page.$eval("#vol", (e) => { e.value = 50; e.dispatchEvent(new Event("input")); });
+    assert.strictEqual(await page.evaluate(() => D.settings.volume), 50);
+    await page.$eval("#vol", (e) => { e.value = 0; e.dispatchEvent(new Event("input")); });
+    assert.strictEqual(await page.$eval("#vol", (e) => Number(e.value)), 30, "slider goes below 30%");
+    await page.$eval("#vol", (e) => { e.value = 50; e.dispatchEvent(new Event("input")); });
+    await page.waitForTimeout(750);
+    await page.click("#yes");
+    await page.waitForFunction(() => audio && Math.abs(audio.volume - 0.5) < 0.01, null, { timeout: 5000 });
+    const vb = await page.locator("#vol").boundingBox();
+    assert(vb.width > 120 && vb.height > 45, "volume slider too small for a shaky hand: " + JSON.stringify(vb));
+    await page.waitForTimeout(1200); // let the save land
+
     // reload: everything persisted
     await page.reload();
     await page.waitForSelector(".tiles button");
+    assert.strictEqual(await page.$eval("#vol", (e) => Number(e.value)), 50, "volume not kept");
     assert(await page.evaluate(() => document.body.classList.contains("side-right")), "side setting not kept");
     await tile("People");
     await pc(`.phrases button:text-is("${name}")`);
@@ -311,7 +334,7 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.mouse.move(hb.x + 20, hb.y + 20);
     await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
     await page.waitForFunction(() => window.__spoken.includes("I need help"), null, { timeout: 8000 });
-    assert.deepStrictEqual(await page.evaluate(() => window.__spoken), ["Hold on. Give me a minute, I'm typing.", "Yes", "I need help"]);
+    assert.deepStrictEqual(await page.evaluate(() => window.__spoken), ["Hold on, give me a minute.", "Yes", "I need help"]);
     await page.evaluate(() => { speechSynthesis.getVoices = () => []; });
     await page.waitForTimeout(750);
     await page.click("#no");

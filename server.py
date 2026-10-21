@@ -11,6 +11,7 @@ import os
 import py_compile
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -43,7 +44,7 @@ KOKORO_FILES = {"kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc3772
                 "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"}
 CACHE = os.path.join(HOME, "cache")
 CACHE_CAP = 300 * 1024 * 1024
-CORE = ("Yes", "No", "I'm not sure, ask me another way.", "Hold on. Give me a minute, I'm typing.", "I need help")  # the always-there buttons
+CORE = ("Yes", "No", "I'm not sure, ask me another way.", "Hold on, give me a minute.", "I need help")  # the always-there buttons
 EXIT_FLAG = os.path.join(HOME, "exit-kiosk")
 AI_KEY = os.path.join(HOME, "ai_key")
 KEEP_ROLLING = 200
@@ -432,9 +433,37 @@ def prune_cache():
     cache_size[0] = total
 
 
+paused = [0]  # live Piper requests now running; Kokoro is frozen (SIGSTOP) while any is
+pause_lock = threading.Lock()
+
+
+def kokoro_pause(on):
+    """Give a live Piper request both cores: freeze the Kokoro pre-render, and let it go on after.
+    (Under systemd a frozen worker can never be left behind: stopping the unit also sends SIGCONT.)"""
+    with pause_lock:
+        paused[0] += 1 if on else -1
+        p = kokoro.proc
+        if p is None or p.poll() is not None or paused[0] != (1 if on else 0):
+            return
+        try:
+            os.kill(p.pid, signal.SIGSTOP if on else signal.SIGCONT)
+        except OSError:
+            pass
+
+
 def piper_say(text, rate, voice, path, end, low=False):
     """(wav, how) with Piper by time.time() `end`: the long-lived worker first; the binary when the
     worker is missing, busy or slow (live only: pre-render never stacks a second Piper)."""
+    if low:
+        return _piper_say(text, rate, voice, path, end, True)
+    kokoro_pause(True)
+    try:
+        return _piper_say(text, rate, voice, path, end, False)
+    finally:
+        kokoro_pause(False)
+
+
+def _piper_say(text, rate, voice, path, end, low):
     left = lambda: end - time.time()  # noqa: E731
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -538,6 +567,54 @@ def live_busy():
     return live_waiting[0] > 0 or time.time() - last_live[0] < 3
 
 
+FAST = ("en_US-ryan-medium", "en_US-joe-medium", "en_US-norman-medium")  # quick Piper voices for typing
+
+
+def fast_voice(voice):
+    """The voice typed text uses with "Fast voice for typing": the chosen one if it is quick, else Ryan."""
+    return voice if voice in FAST else PIPER_DEFAULT
+
+
+warmed = {}  # voice -> worker pid it was loaded in
+
+
+def warm_piper(voice):
+    """Load the typing voice into the Piper worker at boot, so the first typed message is not slow."""
+    if voice not in piper_voices() or not piper_worker_ready():
+        return
+    if piper.proc is not None and warmed.get(voice) == piper.proc.pid and piper.proc.poll() is None:
+        return
+    out = os.path.join(CACHE, ".warm-%s.wav" % voice)
+    try:
+        os.makedirs(CACHE, exist_ok=True)
+        if piper.render("Ready.", voice, 1.0, out, 120.0, queue=30.0) == "ok" and piper.proc:
+            warmed[voice] = piper.proc.pid
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+
+
+def texts_for(d):
+    return list(dict.fromkeys([*CORE, *(p.strip() for c in d["categories"] for p in c.get("phrases", []) if p.strip())]))
+
+
+def voice_status():
+    """Per voice: how many of his phrases (and the big buttons) are already on disk."""
+    try:
+        d = read_json(DATA)
+    except Exception:
+        d = DEFAULT_DATA
+    rate = min(max(float((d.get("settings") or {}).get("rate") or 1.0), 0.5), 2.0)
+    texts = texts_for(d)
+    out = []
+    for v in voices():
+        n = sum(os.path.exists(cache_path(v["id"], t, rate)) for t in texts)
+        out.append(dict(v, ready=n, total=len(texts)))
+    return out
+
+
 def prerender_once():
     try:
         d = read_json(DATA)
@@ -550,7 +627,9 @@ def prerender_once():
         return
     if not voice.startswith("kokoro-"):
         kokoro.stop()  # a Piper voice is chosen: no Kokoro process, no 600 MB
-    texts = list(dict.fromkeys([*CORE, *(p.strip() for c in d["categories"] for p in c.get("phrases", []) if p.strip())]))
+    if s.get("fastTyping", True):
+        warm_piper(fast_voice(voice))
+    texts = texts_for(d)
     jobs = [(voice, t) for t in texts]
     if voice.startswith("kokoro-") and pick_voice(PIPER_DEFAULT) == PIPER_DEFAULT:
         jobs = [(PIPER_DEFAULT, t) for t in CORE] + jobs  # the fallback for YES/NO/HELP is instant too
@@ -781,6 +860,82 @@ def check_app(root, scratch):
 MIN_FREE = int(os.environ.get("VOICEBOX_MIN_FREE", str(1024 ** 3)))  # his data and backups always keep room
 
 
+PACKS_URL = os.environ.get("VOICEBOX_PACKS_URL")  # tests only: instead of the GitHub release
+MAX_PACK = 150 * 1024 * 1024
+PACK_VOICE = re.compile(r"^(en_US-[a-z0-9_]+-(x_low|low|medium|high)|kokoro-[a-z]{2}_[a-z]+)$")
+PACK_FILE = re.compile(r"^voicepack-[A-Za-z0-9_-]+\.tar\.gz$")
+PACK_MEMBER = re.compile(r"^[0-9a-f]{40}\.wav$")
+
+
+def unpack_pack(tgz, dest):
+    """A voice pack is flat <sha1>.wav files (the cache names). Anything else and nothing is used."""
+    bad = UpdateError("A voice pack had unexpected contents, so it was not used.")
+    try:
+        t = tarfile.open(tgz, "r:gz")
+    except (tarfile.TarError, OSError, EOFError):
+        raise bad
+    with t:
+        members = t.getmembers()
+        if not members or any(not m.isfile() or not PACK_MEMBER.match(m.name) or m.size > 5 * 1024 * 1024 for m in members):
+            raise bad
+        clips = [(m.name, t.extractfile(m).read()) for m in members]
+    if not all(wav_ok(b) for _, b in clips):
+        raise bad
+    os.makedirs(dest, exist_ok=True)
+    n = 0
+    for name, b in clips:
+        if not os.path.exists(os.path.join(dest, name)):  # a clip made here already is just as good
+            write_cache(os.path.join(dest, name), b)
+            n += 1
+    return n
+
+
+def fetch_packs(root):
+    """Download the pre-rendered voice packs listed in root/voicepacks.json (every default phrase and big
+    button in every voice), check each sha256, unpack into cache/<voice>/. Pre-render then only has to
+    do what is his own (family names, edited phrases). Returns notes for the family."""
+    notes = []
+    try:
+        with open(os.path.join(root, "voicepacks.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        tag, packs = m["tag"], m["packs"]
+        assert re.fullmatch(r"voicepacks-[0-9a-f]{7,40}", tag) and isinstance(packs, dict)
+    except (OSError, ValueError, KeyError, TypeError, AssertionError):
+        return notes
+    base = PACKS_URL or "https://github.com/lostinthemcp/voicebox/releases/download/%s/" % tag
+    for voice, p in sorted(packs.items()):
+        try:
+            file, sha = p["file"], p["sha256"]
+            assert PACK_VOICE.match(voice) and PACK_FILE.match(file) and re.fullmatch(r"[0-9a-f]{64}", sha)
+        except (KeyError, TypeError, AssertionError):
+            continue
+        dest = os.path.join(CACHE, voice)
+        stamp = os.path.join(dest, ".pack")
+        try:
+            with open(stamp) as f:
+                if f.read().strip() == sha:
+                    continue  # this pack is in already
+        except OSError:
+            pass
+        if not room_for_models():
+            notes.append("Voice pack %s skipped: less than 1 GB free on the disk" % voice)
+            continue
+        scratch = tempfile.mkdtemp(prefix="pack-tmp-", dir=HOME)
+        try:
+            tgz = os.path.join(scratch, file)
+            download(base + file, tgz, MAX_PACK, sha)
+            n = unpack_pack(tgz, dest)
+            with open(stamp, "w") as f:
+                f.write(sha + "\n")
+            notes.append("Voice pack %s: %d new clips" % (voice, n))
+        except Exception as e:
+            sys.stderr.write("voice pack %s failed: %r\n" % (voice, e))
+            notes.append("Voice pack %s could not download (try again later)" % voice)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+    return notes
+
+
 def room_for_models():
     try:
         return shutil.disk_usage(HOME).free >= MIN_FREE
@@ -959,7 +1114,7 @@ def run_update(path):
             os.mkdir(os.path.join(scratch, "x"))
             root, version = unpack(tgz, os.path.join(scratch, "x"))
             check_app(root, scratch)
-            notes = fetch_voices(root)
+            notes = fetch_voices(root) + fetch_packs(root)
             swap_in(root, version)
         restart_soon()
         return {"ok": True, "version": version, "notes": notes}, 200
@@ -1027,7 +1182,7 @@ class Handler(SimpleHTTPRequestHandler):
                                     "time": datetime.datetime.fromtimestamp(os.path.getmtime(b)).strftime("%Y-%m-%d %H:%M"),
                                     "size": os.path.getsize(b)} for b in list_backups()])
         if self.path == "/voices":
-            return self.send_json(voices())
+            return self.send_json(voice_status())
         if self.path == "/battery":
             return self.send_json(battery())
         if self.path == "/prepare":

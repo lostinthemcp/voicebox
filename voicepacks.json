@@ -1,0 +1,62 @@
+{
+ "packs": {
+  "en_US-joe-medium": {
+   "clips": 88,
+   "file": "voicepack-en_US-joe-medium.tar.gz",
+   "name": "Joe",
+   "sha256": "599bc762f03160cee76c7bcf7d94e93f0ffccbce92cb09de658c85027dcf9ec7",
+   "size": 4160406
+  },
+  "en_US-norman-medium": {
+   "clips": 88,
+   "file": "voicepack-en_US-norman-medium.tar.gz",
+   "name": "Norman",
+   "sha256": "e7628581cd05fce652337306beae4f70bbd1fec2fb4975786ec180dbee63b633",
+   "size": 5074633
+  },
+  "en_US-ryan-high": {
+   "clips": 88,
+   "file": "voicepack-en_US-ryan-high.tar.gz",
+   "name": "Ryan sharp",
+   "sha256": "afc99bd4516b80cbea19ca7f8db228ecd21b8b0431047798d224e289a22c1059",
+   "size": 4208349
+  },
+  "en_US-ryan-medium": {
+   "clips": 88,
+   "file": "voicepack-en_US-ryan-medium.tar.gz",
+   "name": "Ryan",
+   "sha256": "1e5bb9c6b99db718388233bb6a7b63c213f0c7760ff9c8903ece22131664a9d5",
+   "size": 4129110
+  },
+  "kokoro-am_fenrir": {
+   "clips": 88,
+   "file": "voicepack-kokoro-am_fenrir.tar.gz",
+   "name": "Fenrir (deeper)",
+   "sha256": "d67a762ac521a3d7fdd5cd62ac84a58c50c40d2fcb63973dc9932e3ee0ca8436",
+   "size": 4432540
+  },
+  "kokoro-am_michael": {
+   "clips": 88,
+   "file": "voicepack-kokoro-am_michael.tar.gz",
+   "name": "Michael",
+   "sha256": "23d48b9e32358912bcdb3bd215cae1862dc48e86f60aa7d766038c04fdcd8d71",
+   "size": 5383434
+  },
+  "kokoro-am_puck": {
+   "clips": 88,
+   "file": "voicepack-kokoro-am_puck.tar.gz",
+   "name": "Puck",
+   "sha256": "8dd0864232abb51a3a66b50b7dc351f6ab3cca529fe9334016aec0cabf94eab9",
+   "size": 4527434
+  },
+  "kokoro-bm_george": {
+   "clips": 88,
+   "file": "voicepack-kokoro-bm_george.tar.gz",
+   "name": "George (British)",
+   "sha256": "90566a0d5cdfe9be5cfdd9931fdd28236a37f9c6f568083157b85f4bc4d3c6f2",
+   "size": 6168269
+  }
+ },
+ "rate": 1.0,
+ "tag": "voicepacks-1b5f2e5"
+}
