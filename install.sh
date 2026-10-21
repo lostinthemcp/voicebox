@@ -19,6 +19,8 @@ KOK="$VB/kokoro"
 KOKORO_URL="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 # file and sha256 (the same pins are in server.py)
 KOKORO_FILES="kokoro-v1.0.onnx:7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5 voices-v1.0.bin:bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
+RUSTDESK_VER="1.5.0"
+RUSTDESK_URL="https://github.com/rustdesk/rustdesk/releases/download/$RUSTDESK_VER/rustdesk-$RUSTDESK_VER-x86_64.deb"
 SUMMARY=()
 ok()   { SUMMARY+=("OK    $*"); echo "  ok: $*"; }
 warn() { SUMMARY+=("CHECK $*"); echo "  !! $*"; }
@@ -252,6 +254,25 @@ else
   warn "could not set the volume - check the speaker icon"
 fi
 
+step "RustDesk (remote help)"
+# Pinned version. No password or settings are set here: Joe sets the permanent password in the RustDesk window.
+if [ "$(dpkg-query -W -f='${Version}' rustdesk 2>/dev/null)" = "$RUSTDESK_VER" ]; then
+  ok "rustdesk $RUSTDESK_VER already installed"
+else
+  tmp="$(mktemp -d)"
+  if curl -fL --retry 3 -o "$tmp/rustdesk-$RUSTDESK_VER-x86_64.deb" "$RUSTDESK_URL" \
+     && (cd "$tmp" && sudo apt-get install -y "./rustdesk-$RUSTDESK_VER-x86_64.deb" >/dev/null); then
+    ok "rustdesk $RUSTDESK_VER installed"
+  else
+    warn "rustdesk did not install (no internet?) - run install.sh again later"
+  fi
+  rm -rf "$tmp"
+fi
+if dpkg -s rustdesk >/dev/null 2>&1; then
+  sudo systemctl enable --now rustdesk >/dev/null 2>&1 && ok "rustdesk service on (starts at boot)" || warn "could not start the rustdesk service"
+fi
+rustdesk_id="$(rustdesk --get-id 2>/dev/null || sudo rustdesk --get-id 2>/dev/null || true)"
+
 step "Touchscreen"
 if xinput list 2>/dev/null | grep -iqE 'touch(screen)?|elan|ipts|ithc'; then
   ok "touchscreen found: $(xinput list --name-only 2>/dev/null | grep -iE 'touch|elan|ipts|ithc' | head -1)"
@@ -267,5 +288,9 @@ echo
 echo "================ VoiceBox install summary ================"
 printf '%s\n' "${SUMMARY[@]}"
 echo "Data and backups: $VB (data.json, backups/)"
+if dpkg -s rustdesk >/dev/null 2>&1; then
+  [ -n "$rustdesk_id" ] && echo "RustDesk ID: $rustdesk_id"
+  echo "RustDesk: open it from the menu, Settings > Security > Set permanent password, and write the ID down."
+fi
 echo "Restart the Surface (or log out and in) and VoiceBox opens by itself."
 echo "=========================================================="
