@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>VoiceBox</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="side-left">
+<div id="app">
+  <aside id="controls">
+    <button id="speak" class="speak">SPEAK</button>
+    <button id="yes" class="yes">YES</button>
+    <button id="no" class="no">NO</button>
+    <button id="notsure" class="notsure">NOT SURE</button>
+    <div class="pair">
+      <button id="back" aria-label="Backspace">&#9003;</button>
+      <button id="clear">CLEAR</button>
+    </div>
+    <button id="help" class="hold help"><span class="fill"></span><span class="label">HOLD FOR HELP</span></button>
+  </aside>
+  <main>
+    <div id="msgrow">
+      <div id="msg" aria-live="polite"></div>
+      <button id="speak2" class="speak" aria-label="Speak">SPEAK</button>
+      <button id="gear" class="hold gear" aria-label="Settings (hold 3 seconds)"><span class="fill"></span><span class="label">&#9881;</span></button>
+    </div>
+    <div id="lastsaid"></div>
+    <div id="suggest"></div>
+    <nav id="tabs"></nav>
+    <section id="panel"></section>
+  </main>
+</div>
+
+<div id="settings" hidden>
+  <div id="sbody"></div>
+  <div id="skeys" class="keyboard"></div>
+</div>
+<div id="modal" hidden></div>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
