@@ -31,20 +31,20 @@ MAX_BODY = 20 * 1024 * 1024
 DEFAULT_DATA = {
     "version": 1,
     "categories": [
-        {"id": "needs", "name": "Needs", "icon": "\U0001F964", "phrases": [
+        {"id": "needs", "name": "Needs", "icon": "cup", "phrases": [
             "I need the bathroom", "I'm thirsty", "I'm hungry", "I'm cold", "I'm hot",
             "Please reposition me", "I'm tired"]},
-        {"id": "feelings", "name": "Feelings", "icon": "\u2764\ufe0f", "phrases": [
+        {"id": "feelings", "name": "Feelings", "icon": "heart", "phrases": [
             "I'm frustrated", "Give me a minute", "I'm okay", "Thank you", "I love you",
             "Let me try again", "Please slow down",
             "I'm still in here. I understand everything.", "I'm tired, ask me later.",
-            "I'm scared.", "This is really hard.", "I'm still me.", "Please be patient with me.",
-            "I know what I want to say. Give me time.", "Please don't give up on me.",
+            "I'm scared.", "This is really hard.", "I'm still me.", "Let me do it.",
+            "I know what I want to say. Give me time.",
             "I'm angry, not at you.", "This sucks."]},
-        {"id": "medical", "name": "Medical", "icon": "\U0001FA7A", "phrases": [
+        {"id": "medical", "name": "Medical", "icon": "cross", "phrases": [
             "Call the nurse", "I'm in pain", "I can't breathe well", "I'm dizzy",
             "I'm sick to my stomach", "Something is wrong"]},
-        {"id": "staff", "name": "Hospital Staff", "icon": "\U0001F3E5", "phrases": [
+        {"id": "staff", "name": "Hospital Staff", "icon": "hospital", "phrases": [
             "Please call my nurse", "When is the doctor coming?", "What is this medicine for?",
             "Please explain that again, slowly.", "Please call my family", "Please raise the bed",
             "Please lower the bed", "Please turn the light off", "Please turn the TV on",
@@ -53,12 +53,14 @@ DEFAULT_DATA = {
             "Please write it down for me", "Please wash your hands", "I need to rest now",
             "Please talk to me, not about me.", "Please tell me what's happening.",
             "Please explain what you are doing before you do it."]},
-        {"id": "conversation", "name": "Talk", "icon": "\U0001F4AC", "phrases": [
+        {"id": "conversation", "name": "Talk", "icon": "talk", "phrases": [
             "Good morning", "I agree", "I don't agree", "Tell me more", "Not now",
             "Please ask me yes or no questions.", "Tell me about your day.", "Sit with me.",
-            "Hold my hand."]},
-        {"id": "people", "name": "People", "icon": "\U0001F46A", "phrases": []},
-        {"id": "about", "name": "About Me", "icon": "\U0001F4CB", "phrases": []},
+            "Hold my hand.", "I'm fine. Quit fussing.", "Knock it off.", "Get me out of here.",
+            "What's the score?", "How's the crew?", "Tell the guys I said hi.", "You look like hell.",
+            "Love you guys."]},
+        {"id": "people", "name": "People", "icon": "people", "phrases": []},
+        {"id": "about", "name": "About Me", "icon": "card", "phrases": []},
     ],
     "words": {},
     "bigrams": {},
