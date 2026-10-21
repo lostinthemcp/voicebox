@@ -216,6 +216,9 @@ gs org.cinnamon.settings-daemon.plugins.power sleep-display-battery 0
 gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
 gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
 gs org.cinnamon.settings-daemon.plugins.power lock-on-suspend false
+gs org.cinnamon.settings-daemon.plugins.power idle-dim-ac false
+gs org.cinnamon.settings-daemon.plugins.power idle-dim-battery false
+gs org.cinnamon.settings-daemon.plugins.power idle-brightness 100
 # closing the Type Cover or bumping the power button must never put him to sleep
 gs org.cinnamon.settings-daemon.plugins.power lid-close-ac-action "'nothing'"
 gs org.cinnamon.settings-daemon.plugins.power lid-close-battery-action "'nothing'"
@@ -225,6 +228,9 @@ gs org.cinnamon.settings-daemon.plugins.power button-suspend "'nothing'"
 sudo mkdir -p /etc/systemd/logind.conf.d
 printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\nHandleSuspendKey=ignore\nHandlePowerKey=ignore\n' \
   | sudo tee /etc/systemd/logind.conf.d/70-voicebox.conf >/dev/null
+# strongest guard: the system itself can no longer sleep, whatever any setting says (uninstall.sh unmasks)
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1 \
+  && ok "sleep, suspend and hibernate switched off for the whole system" || warn "could not mask the sleep targets"
 gs org.cinnamon hotcorner-layout "['expo:false:0', 'scale:false:0', 'scale:false:0', 'desktop:false:0']"
 [ "$(gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null)" = false ] \
   && ok "lock, sleep and lid-close suspend turned off (lid setting fully applies after a restart)" || warn "could not change Cinnamon power settings (run install.sh from the desktop, not over SSH)"

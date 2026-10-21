@@ -51,7 +51,8 @@ Puck, George), auto-login,
 keeps the screen from locking or sleeping, and turns the volume up to 100%.
 It is safe to run again, for example after copying in a newer version. Phrases and data are never touched.
 
-**Keep the Surface plugged in.** Sleep is turned off, so it will run the battery down.
+**Keep the Surface plugged in.** Sleep is turned off for the whole system (and the screen never dims
+or blanks), so it will run the battery down.
 Closing the Type Cover does not put it to sleep, and a bump on the power button does nothing. To shut down, exit to the desktop and use the menu. If the screen is ever stuck or blank, hold the power button for 10 seconds, then press it again: it starts back up into VoiceBox by itself.
 
 ## Settings (for family)
@@ -117,7 +118,8 @@ Everything (phrases, names, learned words, history, settings) lives in one file:
 ## No sound?
 
 1. Check the volume: the speaker icon at the bottom right of the desktop, or the Surface volume buttons.
-   VoiceBox sets the volume to 100% at every login.
+   VoiceBox sets every speaker to 100% and unmuted every 30 seconds, and keeps the built-in speaker as
+   the output (not a TV/HDMI screen). If you turn it down, it goes back up within 30 seconds.
 2. In Settings tap **Test voice**.
 3. If the voice sounds different (more robotic) than usual, the Piper voice is not working and the
    backup voice is being used. Run `bash install.sh` again with internet.

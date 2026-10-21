@@ -41,6 +41,35 @@ screen_awake() {
   pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
 }
 
+# every 30 s, for the whole session: no screen blanking, every speaker at 100% and unmuted,
+# and the built-in speaker as the output (never an HDMI/DisplayPort screen, never taken from Bluetooth)
+LOUD_EVERY="${VOICEBOX_LOUD_EVERY:-30}"
+loud_once() {
+  xset s off -dpms s noblank 2>/dev/null
+  local sinks name desc pick="" analog="" other="" def
+  sinks="$(LC_ALL=C timeout 5 pactl list sinks 2>/dev/null | awk -F': ' '/^[ \t]*Name: /{n=$2} /^[ \t]*Description: /{print n "\t" $2}')"
+  while IFS=$'\t' read -r name desc; do
+    [ -n "$name" ] || continue
+    timeout 5 pactl set-sink-mute "$name" 0 2>/dev/null
+    timeout 5 pactl set-sink-volume "$name" 100% 2>/dev/null
+    case "$name $desc" in
+      *[Hh][Dd][Mm][Ii]*|*DisplayPort*|*bluez*) ;;
+      *[Ss]peaker*) [ -n "$pick" ] || pick="$name" ;;
+      *[Aa]nalog*) [ -n "$analog" ] || analog="$name" ;;
+      *) [ -n "$other" ] || other="$name" ;;
+    esac
+  done <<<"$sinks"
+  pick="${pick:-${analog:-$other}}"
+  def="$(timeout 5 pactl get-default-sink 2>/dev/null)"
+  case "$def" in *bluez*) return 0 ;; esac  # the family plugged in headphones on purpose
+  if [ -n "$pick" ] && [ "$def" != "$pick" ]; then timeout 5 pactl set-default-sink "$pick" 2>/dev/null; fi
+  return 0
+}
+keep_loud() { while kill -0 $$ 2>/dev/null; do loud_once; sleep "$LOUD_EVERY"; done; }  # stops if the kiosk dies hard
+keep_loud 9>&- >/dev/null 2>&1 &
+LOUD_PID=$!
+trap 'kill "$LOUD_PID" 2>/dev/null' EXIT
+
 wait_for_server() {
   local i
   for i in $(seq 1 90); do
