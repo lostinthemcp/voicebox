@@ -13,7 +13,12 @@ PIPER="$VB/piper"
 PIPER_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
 HF="https://huggingface.co/rhasspy/piper-voices/resolve/main/en"
 # the voice list lives in voices.txt (the in-app updater reads the same file)
-VOICES="$(grep -Ev '^\s*(#|$)' "$SRC/voices.txt" 2>/dev/null || echo "en_US/ryan/medium/en_US-ryan-medium en_US/joe/medium/en_US-joe-medium")"
+VOICES="$(grep -v '^#' "$SRC/voices.txt" 2>/dev/null | cut -s -d'|' -f2 | tr -d ' ' | grep '^en_')"
+[ -n "$VOICES" ] || VOICES="en_US/ryan/medium/en_US-ryan-medium en_US/joe/medium/en_US-joe-medium"
+KOK="$VB/kokoro"
+KOKORO_URL="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+# file and sha256 (the same pins are in server.py)
+KOKORO_FILES="kokoro-v1.0.onnx:7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5 voices-v1.0.bin:bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
 SUMMARY=()
 ok()   { SUMMARY+=("OK    $*"); echo "  ok: $*"; }
 warn() { SUMMARY+=("CHECK $*"); echo "  !! $*"; }
@@ -82,7 +87,7 @@ fi
 step "App files"
 mkdir -p "$APP"
 # copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
-for f in server.py kiosk.sh voices.txt; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
+for f in server.py kiosk.sh kokoro_worker.py voices.txt; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
 chmod +x "$APP/kiosk.sh"
 rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$APP/static.old" \
   && { [ ! -d "$APP/static" ] || mv "$APP/static" "$APP/static.old"; } && mv "$APP/static.new" "$APP/static" && rm -rf "$APP/static.old" \
@@ -91,6 +96,34 @@ rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$AP
 # the in-app updater compares this with the stable branch; "unknown" just means "update available"
 { git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown; } >"$APP/VERSION.new" && mv -f "$APP/VERSION.new" "$APP/VERSION"
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
+
+step "Kokoro voices (Michael, Fenrir, Puck, George; optional, Piper works without it)"
+mkdir -p "$KOK"
+if { dpkg -s python3-venv >/dev/null 2>&1 || sudo apt-get install -y python3-venv >/dev/null 2>&1; } \
+   && { [ -x "$KOK/venv/bin/python3" ] || python3 -m venv "$KOK/venv"; } \
+   && "$KOK/venv/bin/pip" install -q --disable-pip-version-check kokoro-onnx==0.6.1 onnxruntime==1.31.0 numpy==2.4.6; then  # the versions tested on LOKI
+  ok "kokoro engine (kokoro-onnx 0.6.1)"
+else
+  warn "kokoro engine did not install - the Piper voices still work; run install.sh again later"
+fi
+for fs in $KOKORO_FILES; do
+  f="${fs%%:*}"; sum="${fs#*:}"
+  [ -f "$KOK/$f" ] && [ "$(sha256sum "$KOK/$f" | cut -d' ' -f1)" = "$sum" ] && continue
+  if curl -fL --retry 3 -o "$KOK/$f.part" "$KOKORO_URL/$f" && [ "$(sha256sum "$KOK/$f.part" | cut -d' ' -f1)" = "$sum" ]; then
+    mv -f "$KOK/$f.part" "$KOK/$f"
+  else
+    rm -f "$KOK/$f.part"; warn "could not download $f (Kokoro voices stay off)"
+  fi
+done
+if [ -x "$KOK/venv/bin/python3" ] && [ -f "$KOK/kokoro-v1.0.onnx" ] && [ -f "$KOK/voices-v1.0.bin" ]; then
+  rm -f "$VB/kokoro-test.wav"
+  if printf '{"text": "Voice box is ready.", "voice": "am_michael", "speed": 1, "out": "%s"}\n' "$VB/kokoro-test.wav" \
+       | timeout 300 "$KOK/venv/bin/python3" "$APP/kokoro_worker.py" "$KOK" 2>/dev/null | grep -q '"ok"' && [ -s "$VB/kokoro-test.wav" ]; then
+    ok "kokoro speaks (test file $VB/kokoro-test.wav)"
+  else
+    warn "kokoro is installed but failed a test run - the Piper voices still work"
+  fi
+fi
 
 # Names stay out of the public repo: pass them at install, e.g. VOICEBOX_PEOPLE="Ann,Bob" bash install.sh
 if [ -z "${VOICEBOX_PEOPLE:-}" ] && [ -t 0 ]; then

@@ -44,7 +44,8 @@ If no voice works at all, the words are shown big on the screen with an OK butto
 3. Type the password when asked. At the end it prints a summary. Lines marked `CHECK` need a look.
 4. Restart the Surface. It logs in by itself and VoiceBox fills the screen.
 
-The installer sets up Chromium, the Piper voice (Ryan, plus Joe as a second male voice), auto-login,
+The installer sets up Chromium, the voices (Piper: Ryan, Ryan sharp, Norman, Joe; Kokoro: Michael, Fenrir,
+Puck, George), auto-login,
 keeps the screen from locking or sleeping, and turns the volume up to 100%.
 It is safe to run again, for example after copying in a newer version. Phrases and data are never touched.
 
@@ -58,7 +59,10 @@ so he will not open it by accident.)
 
 In Settings you can:
 
-- change the text size and the voice speed, pick the voice, and test it
+- change the text size and the voice speed, pick the voice, and test it. Ryan is the voice until you pick another.
+  After a change of voice (or new phrases) Settings shows "Preparing voice: 37 of 120 phrases": VoiceBox
+  is recording every phrase ahead in that voice, so the buttons answer at once. Until it is done, a phrase
+  not ready yet is said in Ryan's voice. Typed messages are spoken a sentence at a time.
 - choose which side the big buttons are on (**Left side / Right side**)
 - **add family names**: type the name, tap **Add name**. Each name becomes a button on the People tile.
 - add, change, delete or reorder phrases on any tile (▲ ▼ moves a phrase)
@@ -126,10 +130,15 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
 
 - `server.py`: Python 3 standard library only. It listens only on 127.0.0.1:8765. Endpoints:
   `GET/POST /data`, `POST /speak` (WAV from Piper; 503 means the page uses the browser voice),
-  `GET /backups`, `POST /restore`, `GET /voices`, `POST /exit-kiosk`, `GET /version`,
+  `GET /backups`, `POST /restore`, `GET /voices`, `GET /prepare`, `POST /exit-kiosk`, `GET /version`,
   `POST /update/check|install|undo` (self-update from the `stable` branch tarball), and `POST /ai`. `/ai` is an
   unused hook that returns 501 and calls nothing. The offline core never depends on it.
-- `voices.txt`: the Piper voices that `install.sh` and the updater download.
+- `voices.txt`: the voices shown in Settings (friendly name | Piper path or `kokoro <voice>`); `install.sh`
+  and the updater download the missing ones.
+- Speech: every answer is cached on disk in `~/.local/share/voicebox/cache/<voice>/` (up to 300 MB, oldest
+  removed first), and a low-priority thread pre-renders every phrase in the chosen voice (`GET /prepare` shows
+  progress). Kokoro runs as one long-lived `kokoro_worker.py` (in `~/.local/share/voicebox/kokoro/venv`,
+  2 threads, nice 10). If Kokoro is busy, slow or down, `/speak` answers with Piper Ryan instead.
 - `static/`: the page (plain HTML, CSS and JS, no build step). `static/words.txt` is the starter word list.
 - `kiosk.sh`: the browser loop. `install.sh` / `uninstall.sh`: setup.
 - Tests: `python3 tests/test_server.py` (data, backups, recovery, security checks, Piper), and
