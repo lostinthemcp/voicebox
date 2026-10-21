@@ -80,9 +80,11 @@ fi
 
 step "App files"
 mkdir -p "$APP"
-cp -f "$SRC/server.py" "$SRC/kiosk.sh" "$APP/"
-rm -rf "$APP/static" && cp -r "$SRC/static" "$APP/static"
+# copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
+for f in server.py kiosk.sh; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f"; done
 chmod +x "$APP/kiosk.sh"
+rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$APP/static.old" \
+  && { [ ! -d "$APP/static" ] || mv "$APP/static" "$APP/static.old"; } && mv "$APP/static.new" "$APP/static" && rm -rf "$APP/static.old"
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
 
 # Names stay out of the public repo: pass them at install, e.g. VOICEBOX_PEOPLE="Ann,Bob" bash install.sh
@@ -166,9 +168,18 @@ gs org.cinnamon.settings-daemon.plugins.power sleep-display-battery 0
 gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
 gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
 gs org.cinnamon.settings-daemon.plugins.power lock-on-suspend false
+# closing the Type Cover or bumping the power button must never put him to sleep
+gs org.cinnamon.settings-daemon.plugins.power lid-close-ac-action "'nothing'"
+gs org.cinnamon.settings-daemon.plugins.power lid-close-battery-action "'nothing'"
+gs org.cinnamon.settings-daemon.plugins.power lid-close-suspend-with-external-monitor false
+gs org.cinnamon.settings-daemon.plugins.power button-power "'interactive'"
+gs org.cinnamon.settings-daemon.plugins.power button-suspend "'nothing'"
+sudo mkdir -p /etc/systemd/logind.conf.d
+printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\nHandleSuspendKey=ignore\n' \
+  | sudo tee /etc/systemd/logind.conf.d/70-voicebox.conf >/dev/null
 gs org.cinnamon hotcorner-layout "['expo:false:0', 'scale:false:0', 'scale:false:0', 'desktop:false:0']"
 [ "$(gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null)" = false ] \
-  && ok "lock and sleep turned off" || warn "could not change Cinnamon power settings (run install.sh from the desktop, not over SSH)"
+  && ok "lock, sleep and lid-close suspend turned off (lid setting fully applies after a restart)" || warn "could not change Cinnamon power settings (run install.sh from the desktop, not over SSH)"
 mkdir -p "$HOME/.linuxmint/mintwelcome" && touch "$HOME/.linuxmint/mintwelcome/norun.flag"
 
 step "Sound"

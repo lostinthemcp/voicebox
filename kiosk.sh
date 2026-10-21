@@ -57,7 +57,12 @@ fi
 
 while true; do
   screen_awake
-  wait_for_server || echo "$(date) server not answering, opening anyway" >>"$LOG"
+  # never open a dead "can't be reached" page he cannot get out of; the desktop stays usable meanwhile
+  if ! wait_for_server; then
+    echo "$(date) server not answering yet, still waiting" >>"$LOG"
+    [ -f "$FLAG" ] && break
+    continue
+  fi
   BROWSER="$(find_browser)" || { echo "$(date) no browser found" >>"$LOG"; sleep 10; continue; }
 
   case "$BROWSER" in

@@ -16,6 +16,12 @@ let audio = null;
 let lastSpoken = { text: "", at: 0 };
 let settingsCat = null;
 let settingsTarget = null;  // the settings input the on-screen keyboard types into
+let ignoreUntil = 0;        // taps on a freshly drawn screen are ignored briefly (shaky double tap)
+let suggestUntil = 0;       // same for the word guesses, which redraw on every key
+let speechSeq = 0;          // only the newest speech request may play
+const DEFAULT_SETTINGS = { textSize: 1, rate: 1, voice: "", side: "left" };
+const settings = () => (D ? D.settings : DEFAULT_SETTINGS);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- saving ----------
 let saveTimer = null, saving = false, saveAgain = false;
@@ -26,46 +32,79 @@ function saveSoon(ms = 600) {
 async function saveNow() {
   if (saving) { saveAgain = true; return; }
   saving = true;
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 10000); // a hung save must not block saving forever
   try {
-    const r = await fetch("/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(D) });
-    if (!r.ok) throw new Error(r.status);
+    const r = await fetch("/data", { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(D) });
+    if (!r.ok) throw new Error(r.status === 507 ? "disk full or not writable" : "error " + r.status);
+    saveProblem("");
   } catch (e) {
-    if (!$("#settings").hidden) toast("Not saved yet - retrying", true); // never alarm him on the main screen
+    saveProblem(e.name === "AbortError" ? "no answer from VoiceBox server" : e.message);
     saveSoon(5000);
   }
+  clearTimeout(t);
   saving = false;
   if (saveAgain) { saveAgain = false; saveSoon(50); }
+}
+// Quiet for him, visible to family: the gear turns red and Settings says why.
+let saveError = "";
+function saveProblem(why) {
+  saveError = why;
+  $("#gear").classList.toggle("warn", !!why);
+  const n = $("#savenote");
+  if (n) n.textContent = why ? "NOT SAVED: " + why + ". Still trying. Everything is kept on this screen." : "";
+}
+async function stopSaves() {
+  clearTimeout(saveTimer);
+  saveAgain = false;
+  while (saving) await sleep(100);
 }
 function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode etc. */ } }
 
 // ---------- speech ----------
 async function play(text) {
+  const my = ++speechSeq;
   if (audio) { audio.pause(); audio = null; }
   try { speechSynthesis.cancel(); } catch (e) { /* none */ }
-  const s = D.settings;
+  const s = settings();
   try {
     const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 15000);
+    const t = setTimeout(() => ctl.abort(), Math.min(15000, 4000 + 40 * text.length)); // long text takes Piper longer
     const r = await fetch("/speak", { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, rate: s.rate, voice: s.voice }) });
     clearTimeout(t);
     if (!r.ok) throw new Error(r.status);
-    const url = URL.createObjectURL(await r.blob());
+    const blob = await r.blob();
+    if (my !== speechSeq) return; // he already tapped something newer
+    const url = URL.createObjectURL(blob);
     audio = new Audio(url);
     audio.onended = () => URL.revokeObjectURL(url);
     await audio.play();
   } catch (e) {
-    fallbackSpeak(text);
+    if (my === speechSeq) fallbackSpeak(text);
   }
 }
 function fallbackSpeak(text) {
   try {
+    if (!window.speechSynthesis || !speechSynthesis.getVoices().length) throw new Error("no voices");
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = D.settings.rate || 1;
+    u.rate = settings().rate || 1;
     u.volume = 1;
+    u.onerror = (e) => { if (e.error !== "canceled" && e.error !== "interrupted") showBig(text); };
     speechSynthesis.speak(u);
-  } catch (e) { /* stay quiet; nothing he can do about it */ }
+  } catch (e) {
+    showBig(text); // no voice at all: show it huge so he can point at it
+  }
+}
+function showBig(text) {
+  const m = $("#modal");
+  m.innerHTML = "";
+  m.append(el("div", { class: "box big" },
+    el("p", { class: "small", text: "The voice is not working. Please read this:" }),
+    el("p", { class: "bigtext", text }),
+    el("button", { class: "speak", text: "OK", onclick: () => { m.hidden = true; } })));
+  m.hidden = false;
 }
 function say(text, { learnIt = true } = {}) {
   text = (text || "").trim();
@@ -74,10 +113,11 @@ function say(text, { learnIt = true } = {}) {
   if (text === lastSpoken.text && now - lastSpoken.at < 700) return; // shaky double tap
   lastSpoken = { text, at: now };
   play(text);
+  $("#lastsaid").textContent = "Said: " + text;
+  if (!D) return; // data not loaded yet: still speak, nothing to record
   D.history.unshift({ t: new Date().toISOString(), text });
   if (D.history.length > 1000) D.history.length = 1000;
   if (learnIt) learn(text);
-  $("#lastsaid").textContent = "Said: " + text;
   saveSoon();
   if (screen === "history") renderPanel();
 }
@@ -119,6 +159,7 @@ function renderSuggest() {
   const box = $("#suggest");
   if (!box) return;
   box.innerHTML = "";
+  suggestUntil = Date.now() + 400;
   for (const w of words) {
     const b = document.createElement("button");
     b.textContent = w === "i" ? "I" : w.replace(/^i'/, "I'");
@@ -144,6 +185,7 @@ function renderMsg() {
   caret.className = "caret";
   line.appendChild(caret);
   el.appendChild(line);
+  el.scrollTop = el.scrollHeight; // newest words in view; he can scroll back up
   $("#clear").textContent = !msg && lastCleared ? "UNDO" : "CLEAR";
   renderSuggest();
 }
@@ -226,6 +268,7 @@ function head(p, title, extra = []) {
 function renderPanel() {
   const p = $("#panel");
   p.innerHTML = "";
+  ignoreUntil = Date.now() + 400;
   $("#home").classList.toggle("here", screen === "home");
   if (screen === "home") return renderHome(p);
   if (screen === "keyboard") return renderKeys(p);
@@ -250,7 +293,7 @@ function renderPanel() {
   p.appendChild(g);
 }
 function tileList() {
-  const tiles = [];
+  const tiles = [{ id: "love", icon: "heart", name: "I love you", says: "I love you" }]; // one tap, no sub-screen
   const special = () => Object.entries(SPECIAL).forEach(([id, [icon, name]]) => tiles.push({ id, icon, name }));
   let placed = false;
   for (const c of D.categories) {
@@ -265,7 +308,7 @@ function renderHome(p) {
   const tiles = tileList();
   g.style.gridTemplateColumns = `repeat(${tiles.length > 10 ? 4 : 5}, minmax(0, 1fr))`;
   for (const t of tiles) {
-    g.append(el("button", { class: t.id === "keyboard" ? "kbd" : "", "data-tile": t.id, onclick: () => go(t.id) },
+    g.append(el("button", { class: t.says ? "love" : t.id === "keyboard" ? "kbd" : "", "data-tile": t.id, onclick: () => (t.says ? say(t.says) : go(t.id)) },
       icon(t.icon), el("span", { text: t.name })));
   }
   p.appendChild(g);
@@ -428,6 +471,8 @@ async function renderSettings() {
   const keepScroll = body.scrollTop;
   body.innerHTML = "";
   body.append(el("div", { class: "stop" }, el("h1", { text: "Settings (family)" }), el("button", { class: "speak", text: "Done", onclick: closeSettings })));
+  body.append(el("div", { id: "savenote" }));
+  saveProblem(saveError);
 
   body.append(el("h2", { text: "Screen and voice" }));
   body.append(stepper("Text size", () => s.textSize, (x) => { s.textSize = x; }, 0.1, 0.7, 1.6, (x) => Math.round(x * 100) + "%"));
@@ -512,6 +557,7 @@ async function renderSettings() {
       const d = JSON.parse(await file.files[0].text());
       if (!d || !Array.isArray(d.categories)) throw new Error("not VoiceBox data");
       if (!confirm("Replace everything with this file? (The current data is backed up first.)")) return;
+      await stopSaves();
       const r = await fetch("/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(d) });
       if (!r.ok) throw new Error(r.status);
       await reloadData(); toast("Imported");
@@ -533,7 +579,7 @@ async function renderSettings() {
     for (const b of bs.slice(0, 30)) {
       blist.append(el("div", { class: "bar" }, el("button", { text: "Restore " + b.time + (b.name.startsWith("daily") ? " (daily)" : ""), onclick: async () => {
         if (!confirm("Go back to the backup from " + b.time + "? (Today's data is backed up first.)")) return;
-        clearTimeout(saveTimer);
+        await stopSaves(); // an in-flight save must not undo the restore
         const r = await fetch("/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: b.name }) });
         if (r.ok) { await reloadData(); toast("Restored " + b.time); } else toast("Restore failed", true);
       } })));
@@ -588,6 +634,16 @@ function toast(t, bad) {
   toastT = setTimeout(() => { e.className = ""; }, 2500);
 }
 async function start() {
+  // YES / NO / NOT SURE / HELP work even before the data loads (or if the server is down)
+  $("#yes").onclick = () => say("Yes");
+  $("#no").onclick = () => say("No");
+  $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
+  holdButton($("#help"), 1000, helpAlarm);
+  $("#panel").addEventListener("click", (e) => {
+    const now = Date.now();
+    if (now < ignoreUntil || (now < suggestUntil && e.target.closest("#suggest"))) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+  try { speechSynthesis.getVoices(); } catch (e) { /* starts loading the browser voices */ }
   for (;;) {
     try { D = normalize(await (await fetch("/data")).json()); break; } catch (e) { toast("Starting..."); await new Promise((r) => setTimeout(r, 1000)); }
   }
@@ -597,20 +653,17 @@ async function start() {
   } catch (e) { /* prediction still uses learned words */ }
   const ls = lsGet("vb-draft");
   msg = ls !== null ? ls : (D.draft || "");
+  lastCleared = lsGet("vb-undo") || "";
   applySettings();
   renderPanel(); renderMsg();
 
   $("#speak").onclick = () => { unlockAudio(); say(msg); };
   $("#home").onclick = () => go("home");
-  $("#yes").onclick = () => say("Yes");
-  $("#no").onclick = () => say("No");
-  $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
   $("#back").onclick = () => typeKey("BS");
   $("#clear").onclick = () => {
-    if (!msg && lastCleared) { setMsg(lastCleared); lastCleared = ""; }
-    else if (msg) { lastCleared = msg; setMsg(""); }
+    if (!msg && lastCleared) { const t = lastCleared; lastCleared = ""; lsSet("vb-undo", ""); setMsg(t); }
+    else if (msg) { lastCleared = msg; lsSet("vb-undo", msg); setMsg(""); }
   };
-  holdButton($("#help"), 1000, helpAlarm);
   holdButton($("#gear"), 3000, openSettings);
 
   document.addEventListener("keydown", (e) => {

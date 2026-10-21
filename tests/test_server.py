@@ -90,6 +90,36 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.req("/data", {"nope": 1})[0], 400)
         self.assertEqual(self.req("/data")[1]["categories"][0]["name"], "Needs")
 
+    def test_valid_is_strict(self):
+        self.start()
+        _, d = self.req("/data")
+        bad = [
+            {"categories": [None]},
+            {"categories": [{"id": "x", "name": "X", "phrases": [1]}]},
+            {"categories": [{"id": 3, "name": "X", "phrases": []}]},
+            {"categories": [{"name": "X", "phrases": []}]},
+            dict(d, words=[]), dict(d, history={}), dict(d, history=[None]), dict(d, bigrams={"a": 1}),
+            dict(d, settings="big"), dict(d, draft=5),
+        ]
+        for b in bad:
+            self.assertEqual(self.req("/data", b)[0], 400, b)
+        self.assertEqual(self.req("/data")[1], d)  # nothing bad got saved
+
+    def test_non_object_body(self):
+        self.start()
+        for path in ("/data", "/restore", "/speak", "/exit-kiosk"):
+            self.assertEqual(self.req(path, [1])[0], 400, path)
+            self.assertEqual(self.req(path, "text")[0], 400, path)
+        self.assertFalse(os.path.exists(os.path.join(self.home, "exit-kiosk")))
+
+    def test_disk_error_is_507(self):
+        self.start()
+        _, d = self.req("/data")
+        os.mkdir(os.path.join(self.home, "data.json.tmp"))  # the write fails, even as root
+        self.assertEqual(self.req("/data", d)[0], 507)
+        os.rmdir(os.path.join(self.home, "data.json.tmp"))
+        self.assertEqual(self.req("/data", d)[0], 200)
+
     def test_backups_and_corrupt_recovery(self):
         self.start()
         _, d = self.req("/data")
