@@ -775,6 +775,82 @@ class PackTest(unittest.TestCase):
         self.assertEqual(self.server.fetch_packs(self.root), ["Voice pack en_US-ryan-medium skipped: less than 1 GB free on the disk"])
 
 
+class PowerKeyTest(unittest.TestCase):
+    """powerkey.py with a fake input device (a FIFO of struct input_event records) and a fake xset."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="vbpower-")
+        self.bin = os.path.join(self.d, "bin")
+        os.makedirs(self.bin)
+        self.state = os.path.join(self.d, "monitor")
+        pathlib.Path(self.state).write_text("On")
+        pathlib.Path(self.bin, "xset").write_text(
+            '#!/bin/bash\necho "xset $*" >>"%s/xset.log"\n'
+            'case "$*" in "q") echo "  Monitor is $(cat %s)";; "dpms force off") echo Off >%s;; "dpms force on") echo On >%s;; esac\n'
+            % (self.d, self.state, self.state, self.state))
+        os.chmod(os.path.join(self.bin, "xset"), 0o755)
+        self.fifo = os.path.join(self.d, "event0")
+        os.mkfifo(self.fifo)
+        self.flag = os.path.join(self.d, "screen-dark")
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def test_caps(self):
+        sys.path.insert(0, ROOT)
+        import powerkey
+        self.assertTrue(powerkey.has_power_key("8000 10000000000000 0"))  # a real "Power Button" device
+        self.assertFalse(powerkey.has_power_key("0"))
+        self.assertFalse(powerkey.has_power_key("fffffffffffffffe"))  # only keys 1-63
+
+    def test_press_toggles_the_screen_only(self):
+        import struct
+        env = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], VOICEBOX_POWER_DEVICES=self.fifo)
+        p = subprocess.Popen([sys.executable, os.path.join(ROOT, "powerkey.py"), self.flag], env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        ev = lambda typ, code, val: struct.pack("llHHi", 0, 0, typ, code, val)  # noqa: E731
+        with open(self.fifo, "wb", buffering=0) as w:
+            w.write(ev(1, 30, 1) + ev(0, 0, 0))  # the A key: nothing
+            time.sleep(0.3)
+            self.assertFalse(os.path.exists(self.flag))
+            w.write(ev(1, 116, 1) + ev(0, 0, 0) + ev(1, 116, 0))  # tap: press + release
+            time.sleep(0.5)
+            self.assertEqual(pathlib.Path(self.state).read_text().strip(), "Off")
+            self.assertTrue(os.path.exists(self.flag), "dark flag, so kiosk.sh leaves DPMS alone")
+            time.sleep(0.5)
+            w.write(ev(1, 116, 1) + ev(1, 116, 0))  # tap again: back on
+            time.sleep(0.5)
+            self.assertEqual(pathlib.Path(self.state).read_text().strip(), "On")
+            self.assertFalse(os.path.exists(self.flag))
+        p.wait(5)
+        log = pathlib.Path(self.d, "xset.log").read_text()
+        self.assertNotIn("xset s", log)  # nothing else is touched
+        self.assertIn("screen off", p.stdout.read())
+
+    def test_no_device_does_nothing(self):
+        env = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], VOICEBOX_POWER_DEVICES=os.path.join(self.d, "missing"))
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "powerkey.py"), self.flag], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("input group", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "xset.log")))
+
+    def test_kiosk_loop_leaves_a_dark_screen_dark(self):
+        """kiosk.sh's no_blank: skips xset while dark; clears the flag once a touch woke the screen."""
+        src = pathlib.Path(ROOT, "kiosk.sh").read_text()
+        fn = src[src.index("no_blank() {"):src.index("\n}\n", src.index("no_blank() {")) + 3]
+        script = 'DARK=%s\n%s\nno_blank\n' % (self.flag, fn)
+        env = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"])
+        open(self.flag, "w").close()
+        pathlib.Path(self.state).write_text("Off")
+        subprocess.run(["bash", "-c", script], env=env, check=True)
+        self.assertNotIn("xset s off", pathlib.Path(self.d, "xset.log").read_text(), "woke the dark screen")
+        self.assertTrue(os.path.exists(self.flag))
+        pathlib.Path(self.state).write_text("On")  # a touch woke it
+        subprocess.run(["bash", "-c", script], env=env, check=True)
+        self.assertFalse(os.path.exists(self.flag))
+        self.assertIn("xset s off -dpms s noblank", pathlib.Path(self.d, "xset.log").read_text())
+
+
 class InstallTest(unittest.TestCase):
     """install.sh re-run with every system tool faked (no sudo, no network): it keeps the working app
     as app.prev and writes update-pending BEFORE touching app/, and puts it back if its copy fails."""

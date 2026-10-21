@@ -17,7 +17,7 @@ cd ~ && wget -qO- https://github.com/lostinthemcp/voicebox/archive/refs/heads/ma
 - **Down one side (left by default):** YES, NO, NOT SURE, **HOLD ON** (orange: says "Hold on, give me a
   minute."), HOME and HOLD FOR HELP.
   These are on every screen.
-- **Top bar:** a wide **volume slider** (🔊). Slide the yellow knob; it never goes below 30%, so he can't be
+- **Top bar:** a wide **volume slider** (🔊). Drag the yellow knob; the number shows the volume. It never goes below 50% and a stray tap moves it only a little, so he can't be
   silenced by accident (the HELP chime is always at least 80%). The tablet's own volume stays at 100%.
 - **Top corner, next to the gear:** the battery (for example 🔋87%⚡ while charging). Under 20% and not
   charging it turns red and says **PLUG IN**.
@@ -57,7 +57,13 @@ It is safe to run again, for example after copying in a newer version. Phrases a
 
 **Keep the Surface plugged in.** Sleep is turned off for the whole system (and the screen never dims
 or blanks), so it will run the battery down.
-Closing the Type Cover does not put it to sleep, and a bump on the power button does nothing. To shut down, exit to the desktop and use the menu. If the screen is ever stuck or blank, hold the power button for 10 seconds, then press it again: it starts back up into VoiceBox by itself.
+Closing the Type Cover does not put it to sleep, and turning the Surface on a bed table does not turn the screen sideways.
+
+**The power button:**
+- **Tap it:** only the screen goes dark. VoiceBox keeps running.
+- **Tap it again, or touch the screen:** the screen comes back, right where it was.
+- **Hold it 10 seconds:** the Surface turns fully off. **Press it once** to turn it on: it starts straight into VoiceBox.
+- To shut down normally, exit to the desktop and use the menu. If the screen is ever stuck, hold the power button for 10 seconds, then press it again.
 
 ## Settings (for family)
 

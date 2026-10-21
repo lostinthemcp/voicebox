@@ -7,6 +7,8 @@ VB="$HOME/.local/share/voicebox"
 FLAG="$VB/exit-kiosk"
 URL="http://127.0.0.1:8765"
 LOG="$VB/kiosk.log"
+DARK="$VB/screen-dark"   # written by powerkey.py: he tapped the power button to darken the screen
+APPDIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$VB"
 # keep the log small
 if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 1000000 ]; then mv -f "$LOG" "$LOG.old"; fi
@@ -35,8 +37,18 @@ find_browser() {
   return 1
 }
 
+# keep the screen from blanking, unless he darkened it with the power button. A touch wakes it (X does
+# that); then "Monitor is On" again and the dark flag is cleared.
+no_blank() {
+  if [ -f "$DARK" ]; then
+    if timeout 5 xset q 2>/dev/null | grep -q "Monitor is On"; then rm -f "$DARK"; else return 0; fi
+  fi
+  xset s off -dpms s noblank 2>/dev/null
+  return 0
+}
+
 screen_awake() {
-  xset s off s noblank -dpms 2>/dev/null || true
+  no_blank
   pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null || true
   pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
 }
@@ -45,7 +57,7 @@ screen_awake() {
 # and the built-in speaker as the output (never an HDMI/DisplayPort screen, never taken from Bluetooth)
 LOUD_EVERY="${VOICEBOX_LOUD_EVERY:-30}"
 loud_once() {
-  xset s off -dpms s noblank 2>/dev/null
+  no_blank
   local sinks name desc pick="" analog="" other="" def
   sinks="$(LC_ALL=C timeout 5 pactl list sinks 2>/dev/null | awk -F': ' '/^[ \t]*Name: /{n=$2} /^[ \t]*Description: /{print n "\t" $2}')"
   while IFS=$'\t' read -r name desc; do
@@ -69,7 +81,11 @@ loud_once() {
 keep_loud() { while kill -0 $$ 2>/dev/null; do loud_once; sleep "$LOUD_EVERY"; done; }  # stops if the kiosk dies hard
 keep_loud 9>&- >/dev/null 2>&1 &
 LOUD_PID=$!
-trap 'kill "$LOUD_PID" 2>/dev/null' EXIT
+# power button = screen off/on (never shutdown); if it cannot read the button it logs and quits
+rm -f "$DARK"
+python3 "$APPDIR/powerkey.py" "$DARK" 9>&- >>"$LOG" 2>&1 &
+POWER_PID=$!
+trap 'kill "$LOUD_PID" "$POWER_PID" 2>/dev/null' EXIT
 
 wait_for_server() {
   local i

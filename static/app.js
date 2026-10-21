@@ -73,9 +73,9 @@ let waitingFor = 0;
 // (Ryan, or Joe/Norman when one of those is chosen), even when a Kokoro voice is chosen for the buttons
 const FAST = ["en_US-ryan-medium", "en_US-joe-medium", "en_US-norman-medium"];
 const fastVoice = (v) => (FAST.includes(v) ? v : "en_US-ryan-medium");
-// his own volume, 30-100%: the system volume is kept at 100% by kiosk.sh, so this is the only control,
+// his own volume, 50-100%: the system volume is kept at 100% by kiosk.sh, so this is the only control,
 // and it can never go so low that he is silent by accident
-const vol = () => Math.min(100, Math.max(30, Number(settings().volume) || 100)) / 100;
+const vol = () => Math.min(100, Math.max(50, Number(settings().volume) || 100)) / 100;
 function fetchWav(text, voice) {
   const s = settings(), ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), CORE.has(text) ? 2000 : 20000);
@@ -751,6 +751,7 @@ function applySettings() {
   document.body.classList.toggle("side-right", D.settings.side === "right");
   document.body.classList.toggle("side-left", D.settings.side !== "right");
   $("#vol").value = Math.round(vol() * 100);
+  $("#volpct").textContent = Math.round(vol() * 100) + "%";
 }
 let toastT = null;
 function toast(t, bad) {
@@ -767,8 +768,13 @@ async function start() {
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
   $("#holdon").onclick = () => say("Hold on, give me a minute.");
   holdButton($("#help"), 1000, helpAlarm);
+  // a stray tap or a palm on the bar moves it at most 10 points toward the touch; dragging the knob
+  // still goes all the way (each small step is under 10)
   $("#vol").oninput = () => {
-    const v = Math.max(30, Number($("#vol").value));
+    const was = Math.round(vol() * 100), want = Number($("#vol").value);
+    const v = Math.max(50, Math.min(100, was + Math.max(-10, Math.min(10, want - was))));
+    $("#vol").value = v;
+    $("#volpct").textContent = v + "%";
     if (audio) audio.volume = v / 100;
     if (D) { D.settings.volume = v; saveSoon(); }
   };

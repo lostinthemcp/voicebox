@@ -140,7 +140,7 @@ copy_failed() {
   exit 1
 }
 # copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
-for f in server.py kiosk.sh kokoro_worker.py piper_worker.py voices.txt; do
+for f in server.py kiosk.sh kokoro_worker.py piper_worker.py powerkey.py voices.txt; do
   cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || copy_failed "$f"
 done
 chmod +x "$APP/kiosk.sh"
@@ -285,6 +285,14 @@ printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHa
 # strongest guard: the system itself can no longer sleep, whatever any setting says (uninstall.sh unmasks)
 sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1 \
   && ok "sleep, suspend and hibernate switched off for the whole system" || warn "could not mask the sleep targets"
+# flipping the Surface on a bed table must never turn the kiosk sideways
+gs org.cinnamon.settings-daemon.peripherals.touchscreen orientation-lock true
+# a tap on the power button turns only the screen off/on (powerkey.py reads the button: needs "input")
+if sudo usermod -aG input "$USER"; then
+  ok "power button = screen off/on (works after the next restart)"; NEED_RESTART=1
+else
+  warn "could not add $USER to the input group: the power button will do nothing"
+fi
 gs org.cinnamon hotcorner-layout "['expo:false:0', 'scale:false:0', 'scale:false:0', 'desktop:false:0']"
 [ "$(gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null)" = false ] \
   && ok "lock, sleep and lid-close suspend turned off (lid setting fully applies after a restart)" || warn "could not change Cinnamon power settings (run install.sh from the desktop, not over SSH)"
@@ -343,5 +351,5 @@ if dpkg -s rustdesk >/dev/null 2>&1; then
   [ -n "$rustdesk_id" ] && echo "RustDesk ID: $rustdesk_id"
   echo "RustDesk: open it from the menu, Settings > Security > Set permanent password, and write the ID down."
 fi
-echo "Restart the Surface (or log out and in) and VoiceBox opens by itself."
+echo "Restart the Surface (or log out and in) and VoiceBox opens by itself.${NEED_RESTART:+ (Needed once for the power button.)}"
 echo "=========================================================="

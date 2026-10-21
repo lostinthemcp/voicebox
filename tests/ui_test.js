@@ -227,23 +227,35 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.waitForTimeout(1200); // let the save land
     await shot("10-right-side");
 
-    // volume slider: never under 30%, applied to the voice, kept after a reload
-    await page.$eval("#vol", (e) => { e.value = 50; e.dispatchEvent(new Event("input")); });
-    assert.strictEqual(await page.evaluate(() => D.settings.volume), 50);
-    await page.$eval("#vol", (e) => { e.value = 0; e.dispatchEvent(new Event("input")); });
-    assert.strictEqual(await page.$eval("#vol", (e) => Number(e.value)), 30, "slider goes below 30%");
-    await page.$eval("#vol", (e) => { e.value = 50; e.dispatchEvent(new Event("input")); });
-    await page.waitForTimeout(750);
-    await page.click("#yes");
-    await page.waitForFunction(() => audio && Math.abs(audio.volume - 0.5) < 0.01, null, { timeout: 5000 });
+    // volume slider: 50-100%, a % next to the speaker, a stray tap moves it at most 10 points, a drag goes all the way
+    const setVol = (v) => page.$eval("#vol", (e, v) => { for (let i = 0; i < 6; i++) { e.value = v; e.dispatchEvent(new Event("input")); } }, v);
+    const volNow = () => page.$eval("#vol", (e) => Number(e.value));
+    await setVol(100);
+    assert.strictEqual(await page.textContent("#volpct"), "100%");
     const vb = await page.locator("#vol").boundingBox();
     assert(vb.width > 120 && vb.height > 45, "volume slider too small for a shaky hand: " + JSON.stringify(vb));
+    await page.mouse.click(vb.x + 3, vb.y + vb.height / 2); // a stray tap at the very low end
+    assert.strictEqual(await volNow(), 90, "a single tap jumped more than 10 points");
+    assert.strictEqual(await page.textContent("#volpct"), "90%");
+    await page.mouse.move(vb.x + vb.width - 20, vb.y + vb.height / 2); // drag the knob all the way down
+    await page.mouse.down();
+    for (let x = vb.width - 20; x >= 0; x -= 8) await page.mouse.move(vb.x + x, vb.y + vb.height / 2);
+    await page.mouse.up();
+    assert.strictEqual(await volNow(), 50, "a drag did not reach the bottom (50%)");
+    await setVol(0);
+    assert.strictEqual(await volNow(), 50, "slider goes below 50%");
+    await setVol(70);
+    assert.strictEqual(await page.evaluate(() => D.settings.volume), 70);
+    await page.waitForTimeout(750);
+    await page.click("#yes");
+    await page.waitForFunction(() => audio && Math.abs(audio.volume - 0.7) < 0.01, null, { timeout: 5000 });
     await page.waitForTimeout(1200); // let the save land
 
     // reload: everything persisted
     await page.reload();
     await page.waitForSelector(".tiles button");
-    assert.strictEqual(await page.$eval("#vol", (e) => Number(e.value)), 50, "volume not kept");
+    assert.strictEqual(await page.$eval("#vol", (e) => Number(e.value)), 70, "volume not kept");
+    assert.strictEqual(await page.textContent("#volpct"), "70%");
     assert(await page.evaluate(() => document.body.classList.contains("side-right")), "side setting not kept");
     await tile("People");
     await pc(`.phrases button:text-is("${name}")`);
