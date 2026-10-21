@@ -14,6 +14,7 @@ rm -f "$HOME/.config/autostart/voicebox-kiosk.desktop" "$HOME/.local/share/appli
 desk="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
 rm -f "$desk/start-voicebox.desktop"
 sudo rm -f /etc/lightdm/lightdm.conf.d/70-voicebox.conf /etc/systemd/logind.conf.d/70-voicebox.conf
+sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null
 
 for k in "org.cinnamon.desktop.screensaver lock-enabled" "org.cinnamon.desktop.screensaver idle-activation-enabled" \
          "org.cinnamon.desktop.session idle-delay" "org.cinnamon.settings-daemon.plugins.power sleep-display-ac" \
@@ -21,6 +22,9 @@ for k in "org.cinnamon.desktop.screensaver lock-enabled" "org.cinnamon.desktop.s
          "org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout" \
          "org.cinnamon.settings-daemon.plugins.power sleep-inactive-battery-timeout" \
          "org.cinnamon.settings-daemon.plugins.power lock-on-suspend" \
+         "org.cinnamon.settings-daemon.plugins.power idle-dim-ac" \
+         "org.cinnamon.settings-daemon.plugins.power idle-dim-battery" \
+         "org.cinnamon.settings-daemon.plugins.power idle-brightness" \
          "org.cinnamon.settings-daemon.plugins.power lid-close-ac-action" \
          "org.cinnamon.settings-daemon.plugins.power lid-close-battery-action" \
          "org.cinnamon.settings-daemon.plugins.power lid-close-suspend-with-external-monitor" \
