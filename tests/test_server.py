@@ -299,7 +299,7 @@ class UpdateTest(Base):
         code, j = self.req("/update/check", {})
         self.assertEqual(code, 200)
         self.assertEqual((j["current"], j["latest"], j["available"], j["can_undo"]), (self.OLD, self.NEW, True, False))
-        self.assertEqual(self.req("/version")[1], {"version": self.OLD})
+        self.assertEqual(self.req("/version")[1]["version"], self.OLD)
         pathlib.Path(self.app, "VERSION").write_text(self.NEW)
         self.assertFalse(self.req("/update/check", {})[1]["available"])
         os.remove(os.path.join(self.app, "VERSION"))
@@ -326,7 +326,7 @@ class UpdateTest(Base):
         self.assertFalse(glob.glob(os.path.join(self.home, "update-tmp-*")), "temp files cleaned")
         self.assertFalse(glob.glob(os.path.join(self.home, "piper", "*.part")))
         self.start()
-        self.assertEqual(self.req("/version")[1], {"version": self.NEW})
+        self.assertEqual(self.req("/version")[1]["version"], self.NEW)
         self.assertEqual(self.req("/data")[1]["words"], {"keep": 1})
         self.assertEqual(pathlib.Path(self.home, "data.json").read_bytes(), before_data, "data.json untouched")
         self.assertEqual(tree(os.path.join(self.home, "backups")), before_backups, "backups untouched")
@@ -337,7 +337,7 @@ class UpdateTest(Base):
         self.assertEqual(tree(self.app), old_app, "undo restores the old app exactly")
         self.assertEqual(tree(self.app + ".prev"), new_app, "undo keeps the newer one, so it can be redone")
         self.start()
-        self.assertEqual(self.req("/version")[1], {"version": self.OLD})
+        self.assertEqual(self.req("/version")[1]["version"], self.OLD)
         self.assertEqual(pathlib.Path(self.home, "data.json").read_bytes(), before_data)
 
     def test_bad_updates_change_nothing(self):

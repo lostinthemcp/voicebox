@@ -70,32 +70,28 @@ Closing the Type Cover does not put it to sleep, and turning the Surface on a be
 **Press and hold the small gear ⚙ in the top corner for 3 seconds.** (A quick tap does nothing,
 so he will not open it by accident.)
 
-In Settings you can:
+Settings has big tabs on the left; tap one and its page shows on the right. **Done** (top right) goes back.
 
-- change the text size and the voice speed, pick the voice, and test it. Ryan is the voice until you pick another.
-  After a change of voice (or new phrases) Settings shows "Preparing voice: 37 of 120 phrases": VoiceBox
-  is recording every phrase ahead in that voice, so the buttons answer at once. Until it is done, a phrase
-  not ready yet is said in Ryan's voice. Each voice button shows **Ready** or how many phrases are ready.
-  Typed messages are spoken a sentence at a time.
-- **Fast voice for typing** (On by default): typed messages always use Ryan (or Joe/Norman if one of those
-  is the chosen voice), because the nicer Kokoro voices are too slow on the Surface for new text. The
-  buttons still use the chosen voice.
-- choose which side the big buttons are on (**Left side / Right side**)
-- **add family names**: type the name, tap **Add name**. Each name becomes a button on the People tile.
-- add, change, delete or reorder phrases on any tile (▲ ▼ moves a phrase)
-- rename tiles, pick a tile's picture, add a new tile or delete one
-- export everything to a file, import a file, or go back to an earlier backup
-- **Exit to desktop**
+- **Voice & sound:** pick the voice (each shows **Ready** or how many phrases are ready), Test voice, speed,
+  Fast voice for typing, volume
+- **Screen:** text size; big buttons on the left or right side
+- **Phrases:** pick a tile, then change, move (▲ ▼) or delete its phrases, or add one; rename a tile, pick its
+  picture, move or delete it, or add a new tile
+- **Family names:** each name is a button on the People tile
+- **About me:** lines he can say about himself (the About Me tile)
+- **Updates:** installed version, when it was put in, Check for updates / Install / Undo
+- **Backups:** export to a file, import a file, or go back to an earlier backup
+- **Exit to desktop** (red, at the bottom)
 
-Tap a box, then type with the keys at the bottom of the Settings screen (or the keyboard cover).
-Tap **Done** when finished. Changes save by themselves. If the gear turns red, saving is failing
+Tap a box to type: the keyboard comes up at the bottom (or use the keyboard cover), and goes away again
+when you are done. Changes save by themselves. If the gear turns red, saving is failing
 (for example the disk is full). Settings says why at the top, and everything stays on screen while it keeps trying.
 
 ## Updating
 
 VoiceBox can update itself. It needs the internet (Wi-Fi) for a few minutes.
 
-1. Hold the gear 3 seconds to open Settings, scroll down to **Updates**.
+1. Hold the gear 3 seconds to open Settings, tap the **Updates** tab.
 2. Tap **Check for updates**. It says **Up to date** or **Update available**.
 3. If there is one, tap **Install update**. It says "Updating...", then VoiceBox restarts by itself
    and the screen comes back. Keep the Surface on and plugged in while it works.

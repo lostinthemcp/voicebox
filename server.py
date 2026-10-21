@@ -1188,7 +1188,11 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/prepare":
             return self.send_json(dict(prep))
         if self.path == "/version":
-            return self.send_json({"version": installed_version()})
+            try:  # when this version was put in (the updater and install.sh write VERSION last)
+                when = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(APP, "VERSION"))).strftime("%Y-%m-%d %H:%M")
+            except OSError:
+                when = ""
+            return self.send_json({"version": installed_version(), "installed": when})
         return super().do_GET()
 
     def do_POST(self):
