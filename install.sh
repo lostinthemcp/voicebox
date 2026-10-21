@@ -1,0 +1,185 @@
+#!/bin/bash
+# shellcheck disable=SC2015  # ok/warn always succeed, so A && B || C is safe here
+# VoiceBox installer for Linux Mint 22.x (Cinnamon). Run ONCE with internet, as the
+# normal user (not root):   bash install.sh
+# Safe to run again: it skips what is already done and refreshes the app files.
+set -u
+if [ "$(id -u)" = 0 ]; then echo "Run this as the normal user (it asks for sudo when needed), not as root."; exit 1; fi
+
+SRC="$(cd "$(dirname "$0")" && pwd)"
+VB="$HOME/.local/share/voicebox"
+APP="$VB/app"
+PIPER="$VB/piper"
+PIPER_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz"
+HF="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US"
+VOICES="ryan/medium/en_US-ryan-medium joe/medium/en_US-joe-medium"
+SUMMARY=()
+ok()   { SUMMARY+=("OK    $*"); echo "  ok: $*"; }
+warn() { SUMMARY+=("CHECK $*"); echo "  !! $*"; }
+step() { echo; echo "== $*"; }
+
+step "Packages (needs your password)"
+sudo -v || { echo "sudo is needed for packages and auto-login."; exit 1; }
+sudo apt-get update -qq || warn "apt update failed (no internet?)"
+sudo apt-get install -y python3 curl >/dev/null && ok "python3 + curl" || { echo "python3/curl failed to install"; exit 1; }
+for p in pulseaudio-utils x11-xserver-utils xinput libinput-tools speech-dispatcher espeak-ng fonts-noto-color-emoji unclutter; do
+  dpkg -s "$p" >/dev/null 2>&1 || sudo apt-get install -y "$p" >/dev/null 2>&1 || warn "optional package $p did not install"
+done
+
+browser=""
+for b in chromium chromium-browser google-chrome-stable; do
+  if command -v "$b" >/dev/null && [ "$(readlink -f "$(command -v "$b")")" != /usr/bin/snap ]; then browser="$b"; break; fi
+done
+if [ -z "$browser" ]; then
+  # Mint ships a real (non-snap) chromium .deb in its own repo
+  if apt-cache policy chromium 2>/dev/null | grep -q 'Candidate: [0-9]' && sudo apt-get install -y chromium >/dev/null; then
+    command -v chromium >/dev/null && browser=chromium
+  fi
+fi
+if [ -z "$browser" ] && command -v flatpak >/dev/null; then
+  flatpak install -y --user flathub org.chromium.Chromium >/dev/null 2>&1 || sudo flatpak install -y flathub org.chromium.Chromium >/dev/null 2>&1
+  flatpak info org.chromium.Chromium >/dev/null 2>&1 && browser="flatpak chromium"
+fi
+if [ -z "$browser" ]; then
+  tmp="$(mktemp -d)"
+  if curl -fsSL -o "$tmp/chrome.deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+     && sudo apt-get install -y "$tmp/chrome.deb" >/dev/null; then browser=google-chrome-stable; fi
+  rm -rf "$tmp"
+fi
+[ -n "$browser" ] && ok "browser: $browser" || warn "NO BROWSER INSTALLED - install Chromium from the Software Manager, then run this again"
+
+step "Piper voice (offline speech)"
+mkdir -p "$PIPER"
+if [ -x "$PIPER/piper/piper" ]; then
+  ok "piper already installed"
+else
+  tmp="$(mktemp -d)"
+  if curl -fL --retry 3 -o "$tmp/piper.tgz" "$PIPER_URL" && tar -xzf "$tmp/piper.tgz" -C "$tmp"; then
+    rm -rf "$PIPER/piper" && mv "$tmp/piper" "$PIPER/piper" && ok "piper downloaded"
+  else
+    warn "piper download failed - VoiceBox will use the browser voice until you rerun install.sh"
+  fi
+  rm -rf "$tmp"
+fi
+for v in $VOICES; do
+  name="$(basename "$v")"
+  for ext in onnx onnx.json; do
+    f="$PIPER/$name.$ext"
+    if [ -s "$f" ] && { [ "$ext" = onnx.json ] || [ "$(stat -c %s "$f")" -gt 1000000 ]; }; then continue; fi
+    curl -fL --retry 3 -o "$f.part" "$HF/$v.$ext?download=true" && mv "$f.part" "$f" || { rm -f "$f.part"; warn "could not download $name.$ext"; }
+  done
+  [ -s "$PIPER/$name.onnx" ] && [ -s "$PIPER/$name.onnx.json" ] && ok "voice $name"
+done
+if [ -x "$PIPER/piper/piper" ] && [ -s "$PIPER/en_US-ryan-medium.onnx" ]; then
+  if echo "Voice box is ready." | "$PIPER/piper/piper" -q -m "$PIPER/en_US-ryan-medium.onnx" -f "$VB/test.wav" >/dev/null 2>&1 && [ -s "$VB/test.wav" ]; then
+    ok "piper speaks (test file $VB/test.wav)"
+  else
+    warn "piper is installed but failed a test run"
+  fi
+fi
+
+step "App files"
+mkdir -p "$APP"
+cp -f "$SRC/server.py" "$SRC/kiosk.sh" "$APP/"
+rm -rf "$APP/static" && cp -r "$SRC/static" "$APP/static"
+chmod +x "$APP/kiosk.sh"
+ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
+
+step "Background service"
+mkdir -p "$HOME/.config/systemd/user"
+cat >"$HOME/.config/systemd/user/voicebox.service" <<EOF
+[Unit]
+Description=VoiceBox speech server
+
+[Service]
+ExecStart=/usr/bin/python3 $APP/server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload && systemctl --user enable voicebox.service >/dev/null 2>&1 && systemctl --user restart voicebox.service \
+  && ok "voicebox.service running" || warn "could not start voicebox.service (log out and in, then run install.sh again)"
+sleep 2
+python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/data', timeout=5)" 2>/dev/null \
+  && ok "server answers on http://127.0.0.1:8765" || warn "server not answering yet: journalctl --user -u voicebox"
+
+step "Kiosk start at login + Start VoiceBox icon"
+mkdir -p "$HOME/.config/autostart" "$HOME/.local/share/applications"
+cat >"$HOME/.config/autostart/voicebox-kiosk.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=VoiceBox kiosk
+Exec=$APP/kiosk.sh
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3
+NoDisplay=true
+EOF
+icon_file="$HOME/.local/share/applications/voicebox.desktop"
+cat >"$icon_file" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Start VoiceBox
+Comment=Open the VoiceBox talker full screen
+Exec=$APP/kiosk.sh
+Icon=audio-speakers
+Terminal=false
+Categories=Accessibility;
+EOF
+chmod +x "$icon_file"
+desk="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+mkdir -p "$desk"
+cp -f "$icon_file" "$desk/start-voicebox.desktop"
+chmod +x "$desk/start-voicebox.desktop"
+gio set "$desk/start-voicebox.desktop" metadata::trusted true 2>/dev/null || true
+ok "autostart + 'Start VoiceBox' on the desktop and in the menu"
+
+step "Auto-login"
+sudo mkdir -p /etc/lightdm/lightdm.conf.d
+printf '[Seat:*]\nautologin-user=%s\nautologin-user-timeout=0\n' "$USER" | sudo tee /etc/lightdm/lightdm.conf.d/70-voicebox.conf >/dev/null
+sudo groupadd -f autologin && sudo usermod -aG autologin "$USER"
+ok "LightDM auto-login for $USER"
+if [ -f /etc/lightdm/lightdm.conf ] && grep -Eq '^\s*autologin-user=\s*$' /etc/lightdm/lightdm.conf; then
+  warn "/etc/lightdm/lightdm.conf has an empty autologin-user= line that overrides ours: set it in Menu > Login Window > Users"
+fi
+
+step "Screen stays on, no lock, no sleep"
+gs() { if gsettings writable "$1" "$2" >/dev/null 2>&1; then gsettings set "$1" "$2" "$3"; fi; }
+gs org.cinnamon.desktop.screensaver lock-enabled false
+gs org.cinnamon.desktop.screensaver idle-activation-enabled false
+gs org.cinnamon.desktop.session idle-delay 0
+gs org.cinnamon.settings-daemon.plugins.power sleep-display-ac 0
+gs org.cinnamon.settings-daemon.plugins.power sleep-display-battery 0
+gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
+gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
+gs org.cinnamon.settings-daemon.plugins.power lock-on-suspend false
+gs org.cinnamon hotcorner-layout "['expo:false:0', 'scale:false:0', 'scale:false:0', 'desktop:false:0']"
+[ "$(gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null)" = false ] \
+  && ok "lock and sleep turned off" || warn "could not change Cinnamon power settings (run install.sh from the desktop, not over SSH)"
+mkdir -p "$HOME/.linuxmint/mintwelcome" && touch "$HOME/.linuxmint/mintwelcome/norun.flag"
+
+step "Sound"
+if pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null && pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null; then
+  ok "volume 100% (also set at every login)"
+else
+  warn "could not set the volume - check the speaker icon"
+fi
+
+step "Touchscreen"
+if xinput list 2>/dev/null | grep -iqE 'touch(screen)?|elan|ipts|ithc'; then
+  ok "touchscreen found: $(xinput list --name-only 2>/dev/null | grep -iE 'touch|elan|ipts|ithc' | head -1)"
+elif sudo libinput list-devices 2>/dev/null | grep -A3 -i 'touch' | grep -q 'Capabilities:.*touch'; then
+  ok "touchscreen found (libinput)"
+else
+  warn "NO touchscreen found. On a Surface the linux-surface kernel usually fixes this:
+        https://github.com/linux-surface/linux-surface/wiki/Installation-and-Setup
+        (not installed automatically - ask Joe first)"
+fi
+
+echo
+echo "================ VoiceBox install summary ================"
+printf '%s\n' "${SUMMARY[@]}"
+echo "Data and backups: $VB (data.json, backups/)"
+echo "Restart the Surface (or log out and in) and VoiceBox opens by itself."
+echo "=========================================================="

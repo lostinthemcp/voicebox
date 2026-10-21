@@ -30,7 +30,7 @@ async function saveNow() {
     const r = await fetch("/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(D) });
     if (!r.ok) throw new Error(r.status);
   } catch (e) {
-    toast("Not saved yet - retrying", true);
+    if (!$("#settings").hidden) toast("Not saved yet - retrying", true); // never alarm him on the main screen
     saveSoon(5000);
   }
   saving = false;
@@ -65,7 +65,7 @@ function fallbackSpeak(text) {
     u.rate = D.settings.rate || 1;
     u.volume = 1;
     speechSynthesis.speak(u);
-  } catch (e) { toast("No voice available", true); }
+  } catch (e) { /* stay quiet; nothing he can do about it */ }
 }
 function say(text, { learnIt = true } = {}) {
   text = (text || "").trim();
@@ -552,7 +552,7 @@ function toast(t, bad) {
 }
 async function start() {
   for (;;) {
-    try { D = normalize(await (await fetch("/data")).json()); break; } catch (e) { toast("Starting...", true); await new Promise((r) => setTimeout(r, 1000)); }
+    try { D = normalize(await (await fetch("/data")).json()); break; } catch (e) { toast("Starting..."); await new Promise((r) => setTimeout(r, 1000)); }
   }
   try {
     dict = (await (await fetch("words.txt")).text()).split("\n").filter(Boolean);
@@ -587,6 +587,12 @@ async function start() {
     }
   });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
+  // warm the server's speech cache so the always-there buttons answer instantly
+  (async () => {
+    for (const t of ["Yes", "No", "I'm not sure, ask me another way.", "I need help"]) {
+      try { await fetch("/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t, rate: D.settings.rate, voice: D.settings.voice }) }); } catch (e) { break; }
+    }
+  })();
   document.addEventListener("visibilitychange", () => { if (document.hidden) saveNow(); });
 }
 start();
