@@ -92,6 +92,10 @@ function fallbackSpeak(text) {
     u.rate = settings().rate || 1;
     u.volume = 1;
     u.onerror = (e) => { if (e.error !== "canceled" && e.error !== "interrupted") showBig(text); };
+    // a stalled browser voice fires no error: if it has not started in 3 s, show the text
+    const my = speechSeq; let started = false;
+    u.onstart = () => { started = true; };
+    setTimeout(() => { if (!started && my === speechSeq) showBig(text); }, 3000);
     speechSynthesis.speak(u);
   } catch (e) {
     showBig(text); // no voice at all: show it huge so he can point at it
@@ -109,7 +113,7 @@ function showBig(text) {
 function say(text, { learnIt = true } = {}) {
   text = (text || "").trim();
   if (!text) return;
-  const now = Date.now();
+  const now = performance.now();
   if (text === lastSpoken.text && now - lastSpoken.at < 700) return; // shaky double tap
   lastSpoken = { text, at: now };
   play(text);
@@ -159,7 +163,7 @@ function renderSuggest() {
   const box = $("#suggest");
   if (!box) return;
   box.innerHTML = "";
-  suggestUntil = Date.now() + 400;
+  suggestUntil = performance.now() + 400;
   for (const w of words) {
     const b = document.createElement("button");
     b.textContent = w === "i" ? "I" : w.replace(/^i'/, "I'");
@@ -268,7 +272,7 @@ function head(p, title, extra = []) {
 function renderPanel() {
   const p = $("#panel");
   p.innerHTML = "";
-  ignoreUntil = Date.now() + 400;
+  ignoreUntil = performance.now() + 400;
   $("#home").classList.toggle("here", screen === "home");
   if (screen === "home") return renderHome(p);
   if (screen === "keyboard") return renderKeys(p);
@@ -640,7 +644,7 @@ async function start() {
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
   holdButton($("#help"), 1000, helpAlarm);
   $("#panel").addEventListener("click", (e) => {
-    const now = Date.now();
+    const now = performance.now();
     if (now < ignoreUntil || (now < suggestUntil && e.target.closest("#suggest"))) { e.stopPropagation(); e.preventDefault(); }
   }, true);
   try { speechSynthesis.getVoices(); } catch (e) { /* starts loading the browser voices */ }
