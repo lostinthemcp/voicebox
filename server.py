@@ -416,8 +416,12 @@ def prune_cache():
                 os.remove(p)
         except OSError:
             pass
+    # the five big buttons are never pruned (any voice, any speed): HELP must always answer at once
+    core = {hashlib.sha1(("%s\n%.2f" % (c, r / 100)).encode()).hexdigest() + ".wav" for c in CORE for r in range(50, 201)}
     total = sum(f[1] for f in files)
     for _, size, p in sorted(files):
+        if os.path.basename(p) in core:
+            continue
         if total <= CACHE_CAP * 0.9:  # a little headroom, so a full cache is not pruned on every write
             break
         try:
