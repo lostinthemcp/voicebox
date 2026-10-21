@@ -80,6 +80,7 @@ DEFAULT_DATA = {
 }
 
 lock = threading.Lock()
+piper_lock = threading.Lock()
 tts_cache = {}  # (text, rate, voice) -> wav bytes; repeated phrases play instantly
 
 
@@ -146,7 +147,7 @@ def backup_current(force=False):
         except ValueError:
             newest = None
     if force or newest is None or now - newest >= ROLLING_EVERY:
-        shutil.copy2(DATA, os.path.join(BACKUPS, now.strftime("data-%Y%m%d-%H%M.json")))
+        shutil.copy2(DATA, os.path.join(BACKUPS, now.strftime("data-%Y%m%d-%H%M%S.json")))
         rolling = sorted(glob.glob(os.path.join(BACKUPS, "data-*.json")))
         for old in rolling[:-KEEP_ROLLING]:
             os.remove(old)
@@ -172,19 +173,19 @@ def load():
         try:
             return read_json(DATA)
         except FileNotFoundError:
-            pass
+            pass  # a missing file also recovers from backups below
         except Exception:
             # keep the broken file for a human to look at, then recover
             stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             shutil.copy2(DATA, DATA + ".corrupt-" + stamp)
-            for b in list_backups():
-                try:
-                    d = read_json(b)
-                except Exception:
-                    continue
-                write_atomic(DATA, json.dumps(d, ensure_ascii=False))
-                sys.stderr.write("data.json was corrupt; restored from %s\n" % b)
-                return d
+        for b in list_backups():
+            try:
+                d = read_json(b)
+            except Exception:
+                continue
+            write_atomic(DATA, json.dumps(d, ensure_ascii=False))
+            sys.stderr.write("data.json was missing or corrupt; restored from %s\n" % b)
+            return d
         d = json.loads(json.dumps(DEFAULT_DATA))
         write_atomic(DATA, json.dumps(d))
         return d
@@ -204,10 +205,11 @@ def piper_wav(text, rate, voice):
     key = (text, rate, voice)
     if key in tts_cache:
         return tts_cache[key]
-    r = subprocess.run(
-        [PIPER_BIN, "-q", "-m", os.path.join(PIPER_DIR, voice + ".onnx"), "-f", "-",
-         "--length_scale", "%.3f" % (1.0 / rate)],
-        input=text.replace("\n", " ").encode(), capture_output=True, timeout=30)
+    with piper_lock:  # one Piper at a time: rapid taps must not swamp the small CPU
+        r = subprocess.run(
+            [PIPER_BIN, "-q", "-m", os.path.join(PIPER_DIR, voice + ".onnx"), "-f", "-",
+             "--length_scale", "%.3f" % (1.0 / rate)],
+            input=text.replace("\n", " ").encode(), capture_output=True, timeout=30)
     if r.returncode != 0 or r.stdout[:4] != b"RIFF":
         return None
     if len(tts_cache) > 300:
