@@ -90,6 +90,9 @@ rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$AP
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
 
 # Names stay out of the public repo: pass them at install, e.g. VOICEBOX_PEOPLE="Ann,Bob" bash install.sh
+if [ -z "${VOICEBOX_PEOPLE:-}" ] && [ -t 0 ]; then
+  read -rp "Family names for the People tile, separated by commas (or just press Enter to skip): " VOICEBOX_PEOPLE
+fi
 if [ -n "${VOICEBOX_PEOPLE:-}" ]; then
   systemctl --user stop voicebox.service 2>/dev/null  # only one writer of data.json at a time
   VOICEBOX_PEOPLE="$VOICEBOX_PEOPLE" python3 -c '
