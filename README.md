@@ -3,6 +3,15 @@
 A talker for someone who cannot speak right now. Tap a button and the tablet says it out loud.
 It runs on the Surface by itself, with no internet needed after it is set up.
 
+## Quick install
+
+On the Surface, with internet: open Terminal (Ctrl+Alt+T), copy this line in, press Enter.
+It asks for the computer's password and for the family names.
+
+```
+cd ~ && wget -qO- https://github.com/lostinthemcp/voicebox/archive/refs/heads/main.tar.gz | tar xz && cd voicebox-main && bash install.sh
+```
+
 ## What is on the screen
 
 - **Down one side (left by default):** YES, NO, NOT SURE, HOME and HOLD FOR HELP.
