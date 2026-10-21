@@ -21,6 +21,7 @@ KOKORO_URL="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-
 KOKORO_FILES="kokoro-v1.0.onnx:7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5 voices-v1.0.bin:bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
 RUSTDESK_VER="1.5.0"
 RUSTDESK_URL="https://github.com/rustdesk/rustdesk/releases/download/$RUSTDESK_VER/rustdesk-$RUSTDESK_VER-x86_64.deb"
+RUSTDESK_SHA256="4e2b9701d25a7ef373f3d09bda584a37d6902f97a6ab15f2e86d4a5783e2a0ec"  # of the 1.5.0 deb, checked 2026-10-21
 SUMMARY=()
 ok()   { SUMMARY+=("OK    $*"); echo "  ok: $*"; }
 warn() { SUMMARY+=("CHECK $*"); echo "  !! $*"; }
@@ -88,18 +89,47 @@ fi
 
 step "App files"
 mkdir -p "$APP"
-# copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
-for f in server.py kiosk.sh kokoro_worker.py piper_worker.py voices.txt; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
-chmod +x "$APP/kiosk.sh"
-# outside app/, so the in-app updater can never replace the thing that undoes a bad update
+# the in-app updater compares VERSION with the stable branch; anything but its commit means "update available"
+NEWVER="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo "unknown-$(date +%s)")"
+# outside app/, so neither this copy nor the in-app updater replaces the thing that undoes a bad version
 cp -f "$SRC/bootguard.sh" "$VB/bootguard.sh.new" && mv -f "$VB/bootguard.sh.new" "$VB/bootguard.sh" && chmod +x "$VB/bootguard.sh" \
-  || { echo "Could not copy bootguard.sh (disk full?)."; exit 1; }
+  || { echo "Could not copy bootguard.sh (disk full?). The app was not updated."; exit 1; }
+if [ -s "$APP/server.py" ]; then
+  # Keep the working app as app.prev and write update-pending BEFORE touching app/: if this copy stops
+  # half way, or the new version never gets healthy, bootguard.sh puts app.prev back.
+  # While an earlier version is still unproven (update-pending), app.prev is the last good one: keep it.
+  if [ ! -f "$VB/update-pending" ] || [ ! -d "$VB/app.prev" ]; then
+    rm -rf "$VB/app.bad" "$VB/app.prev.new"
+    if cp -a "$APP" "$VB/app.prev.new" && diff -rq "$APP" "$VB/app.prev.new" >/dev/null && [ -s "$VB/app.prev.new/server.py" ]; then
+      rm -rf "$VB/app.prev" && mv "$VB/app.prev.new" "$VB/app.prev" \
+        || { echo "Could not keep a copy of the current app. The app was not updated."; exit 1; }
+    else
+      rm -rf "$VB/app.prev.new"; echo "Could not keep a copy of the current app (disk full?). The app was not updated."; exit 1
+    fi
+  fi
+  { echo "$NEWVER 0" >"$VB/update-pending.tmp" && mv -f "$VB/update-pending.tmp" "$VB/update-pending"; } \
+    || { echo "Could not write $VB/update-pending (disk full?). The app was not updated."; exit 1; }
+  ok "the current app is kept in $VB/app.prev (put back by itself if the new one does not work)"
+fi
+copy_failed() {
+  echo "Could not copy $1 (disk full?)."
+  if [ -f "$VB/update-pending" ] && bash "$VB/bootguard.sh" --now && [ ! -f "$VB/update-pending" ]; then
+    echo "The previous version was put back, so the app is as it was. Fix that and run install.sh again."
+  else
+    echo "The app may be half updated. Run install.sh again once there is space; see $VB/bootguard.log."
+  fi
+  exit 1
+}
+# copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
+for f in server.py kiosk.sh kokoro_worker.py piper_worker.py voices.txt; do
+  cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || copy_failed "$f"
+done
+chmod +x "$APP/kiosk.sh"
 rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$APP/static.old" \
   && { [ ! -d "$APP/static" ] || mv "$APP/static" "$APP/static.old"; } && mv "$APP/static.new" "$APP/static" && rm -rf "$APP/static.old" \
-  || { echo "Could not copy the app pages (disk full?). Fix that and run install.sh again."; exit 1; }
-[ -s "$APP/static/index.html" ] || { echo "App page missing after copy. Run install.sh again."; exit 1; }
-# the in-app updater compares this with the stable branch; "unknown" just means "update available"
-{ git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown; } >"$APP/VERSION.new" && mv -f "$APP/VERSION.new" "$APP/VERSION"
+  || copy_failed "the app pages"
+[ -s "$APP/static/index.html" ] || copy_failed "the app page"
+{ echo "$NEWVER" >"$APP/VERSION.new" && mv -f "$APP/VERSION.new" "$APP/VERSION"; } || copy_failed VERSION
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
 
 step "Speech engines: fast Piper worker + Kokoro voices (optional; the piper program still works without them)"
@@ -261,17 +291,25 @@ if [ "$(dpkg-query -W -f='${Version}' rustdesk 2>/dev/null)" = "$RUSTDESK_VER" ]
 else
   tmp="$(mktemp -d)"
   if curl -fL --retry 3 -o "$tmp/rustdesk-$RUSTDESK_VER-x86_64.deb" "$RUSTDESK_URL" \
+     && [ "$(sha256sum "$tmp/rustdesk-$RUSTDESK_VER-x86_64.deb" | cut -d' ' -f1)" = "$RUSTDESK_SHA256" ] \
      && (cd "$tmp" && sudo apt-get install -y "./rustdesk-$RUSTDESK_VER-x86_64.deb" >/dev/null); then
     ok "rustdesk $RUSTDESK_VER installed"
   else
-    warn "rustdesk did not install (no internet?) - run install.sh again later"
+    warn "rustdesk did not install (no internet, or the download did not match its checksum) - run install.sh again later"
   fi
   rm -rf "$tmp"
 fi
 if dpkg -s rustdesk >/dev/null 2>&1; then
   sudo systemctl enable --now rustdesk >/dev/null 2>&1 && ok "rustdesk service on (starts at boot)" || warn "could not start the rustdesk service"
 fi
-rustdesk_id="$(rustdesk --get-id 2>/dev/null || sudo rustdesk --get-id 2>/dev/null || true)"
+# The root service (rustdesk --service) does the remote access. RustDesk also writes a tray-icon
+# autostart (~/.config/autostart/rustdesk.desktop, "rustdesk --tray") into the session; it is only a
+# panel icon, but nothing extra should start over the kiosk, so it is switched off (XDG Hidden=true).
+# RustDesk only creates that file when it is missing, so it stays off. Remote access is not affected.
+mkdir -p "$HOME/.config/autostart"
+printf '[Desktop Entry]\nType=Application\nName=RustDesk tray (off for the VoiceBox kiosk)\nExec=rustdesk --tray\nHidden=true\n' \
+  >"$HOME/.config/autostart/rustdesk.desktop"
+rustdesk_id="$(timeout 10 rustdesk --get-id 2>/dev/null || timeout 10 sudo -n rustdesk --get-id 2>/dev/null || true)"
 
 step "Touchscreen"
 if xinput list 2>/dev/null | grep -iqE 'touch(screen)?|elan|ipts|ithc'; then

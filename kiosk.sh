@@ -50,10 +50,11 @@ loud_once() {
   sinks="$(LC_ALL=C timeout 5 pactl list sinks 2>/dev/null | awk -F': ' '/^[ \t]*Name: /{n=$2} /^[ \t]*Description: /{print n "\t" $2}')"
   while IFS=$'\t' read -r name desc; do
     [ -n "$name" ] || continue
+    case "$name" in *bluez*) continue ;; esac  # Bluetooth headphones/speakers: leave their volume alone
     timeout 5 pactl set-sink-mute "$name" 0 2>/dev/null
     timeout 5 pactl set-sink-volume "$name" 100% 2>/dev/null
     case "$name $desc" in
-      *[Hh][Dd][Mm][Ii]*|*DisplayPort*|*bluez*) ;;
+      *[Hh][Dd][Mm][Ii]*|*DisplayPort*) ;;
       *[Ss]peaker*) [ -n "$pick" ] || pick="$name" ;;
       *[Aa]nalog*) [ -n "$analog" ] || analog="$name" ;;
       *) [ -n "$other" ] || other="$name" ;;

@@ -91,8 +91,9 @@ VoiceBox can update itself. It needs the internet (Wi-Fi) for a few minutes.
 
 Phrases, names, history, settings and backups are never changed by an update.
 If something goes wrong before the new version is in place, nothing changes and Settings says so.
-If a new version is put in but keeps failing to start, VoiceBox goes back to the previous version by itself
-(after 3 tries, about 10 seconds).
+A new version (from an update or from running install.sh again) only counts as good once the screen has
+loaded and a voice worked. If it keeps failing to start before that, VoiceBox goes back to the previous
+version by itself (after 3 tries, about 10 seconds when it crashes; or after 3 restarts of the Surface).
 Updates only come from the reviewed `stable` version on GitHub, never from work in progress.
 
 ## Getting out and back in
@@ -136,6 +137,9 @@ Everything (phrases, names, learned words, history, settings) lives in one file:
 The installer adds RustDesk so Joe can see and fix the Surface from home. After installing, open RustDesk
 from the menu, go to Settings > Security > Set permanent password, and write down the ID number it shows.
 Joe connects with that ID and password. Nobody can connect without the password.
+RustDesk's tray icon is switched off at login so nothing extra opens over VoiceBox; remote access runs
+as a background service and still works. While Joe is connected, RustDesk may show a small window on the
+Surface; it goes away when he disconnects.
 
 ## Remove
 
@@ -158,8 +162,11 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
   every call, is only the last resort. If Kokoro is busy, slow or down, `/speak` answers with Piper Ryan.
   `GET /battery` reads `/sys/class/power_supply/BAT*`.
 - `static/`: the page (plain HTML, CSS and JS, no build step). `static/words.txt` is the starter word list.
-- `bootguard.sh`: runs before every server start (installed outside `app/`, so updates never replace it);
-  rolls back to `app.prev` if an updated server fails 3 starts in a row.
+- `bootguard.sh`: runs before every server start (installed outside `app/`). The updater and install.sh
+  write `update-pending` ("<version> <starts>") and keep `app.prev` BEFORE touching `app/`; the page
+  POSTs `/healthy` after it started and a `/speak` worked, which clears it (only for that version). On the
+  4th start without that, or `bootguard.sh --now`, it puts `app.prev` back; each step can be resumed and
+  is logged to `bootguard.log`.
 - `kiosk.sh`: the browser loop. `install.sh` / `uninstall.sh`: setup.
 - Tests: `python3 tests/test_server.py` (data, backups, recovery, security checks, Piper), and
   `tests/ui_test.js` (Playwright click-through; takes the screenshots in `screenshots/`).

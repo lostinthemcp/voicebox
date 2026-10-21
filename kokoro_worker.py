@@ -10,7 +10,7 @@ import os
 import sys
 import wave
 
-os.nice(10)  # never compete with the page or Piper for the small CPU
+# server.py starts this under `nice -n 10`, so it never competes with the page or Piper for the small CPU
 answers = os.fdopen(os.dup(1), "w", buffering=1)
 os.dup2(2, 1)  # anything the libraries print goes to the log, not into our answers
 

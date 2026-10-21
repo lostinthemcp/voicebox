@@ -267,17 +267,27 @@ def pick_voice(voice):
     return PIPER_DEFAULT if PIPER_DEFAULT in pv else (pv[0] if pv else None)
 
 
-def piper_wav(text, rate, voice, low=False):
-    """The piper binary: reloads the model every call (seconds on the Surface). Last resort only."""
+NICE = ["nice", "-n", "10"]  # a command prefix: a pre-exec hook can deadlock a threaded server on fork
+
+
+def piper_wav(text, rate, voice, low=False, end=None):
+    """The piper binary: reloads the model every call (seconds on the Surface). Last resort only.
+    A live request gives up at time.time() `end` (waiting for its turn included); pre-render waits."""
     if voice not in piper_voices() or not os.path.exists(PIPER_BIN):
         return None
-    with piper_lock:  # one Piper at a time: rapid taps must not swamp the small CPU
+    if not piper_lock.acquire(timeout=-1 if end is None else max(0.1, end - time.time())):  # one at a time
+        return None
+    try:
         r = subprocess.run(
-            [PIPER_BIN, "-q", "-m", os.path.join(PIPER_DIR, voice + ".onnx"), "-f", "-",
-             "--length_scale", "%.3f" % (1.0 / rate)],
-            input=text.replace("\n", " ").encode(), capture_output=True, timeout=30,
-            preexec_fn=(lambda: os.nice(10)) if low else None)  # pre-render runs at low priority
-    if r.returncode != 0 or r.stdout[:4] != b"RIFF":
+            (NICE if low else []) + [PIPER_BIN, "-q", "-m", os.path.join(PIPER_DIR, voice + ".onnx"), "-f", "-",
+                                     "--length_scale", "%.3f" % (1.0 / rate)],
+            input=text.replace("\n", " ").encode(), capture_output=True,
+            timeout=30 if end is None else max(2.0, end - time.time()))
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        piper_lock.release()
+    if r.returncode != 0 or not wav_ok(r.stdout):
         return None
     return r.stdout
 
@@ -286,8 +296,8 @@ class Worker:
     """ONE long-lived speech process (models load once), one render at a time. A render that
     outlives the caller's wait still finishes and lands in the disk cache for next time."""
 
-    def __init__(self, name, script, folder, ready):
-        self.name, self.script, self.folder, self.ready = name, script, folder, ready
+    def __init__(self, name, script, folder, ready, low=False):
+        self.name, self.script, self.folder, self.ready, self.low = name, script, folder, ready, low
         self.proc = None
         self.busy = threading.Lock()  # held from the request until the worker answers (or dies)
         self.answer = None
@@ -323,7 +333,7 @@ class Worker:
                 if time.time() - self.started < 60:
                     raise OSError("worker died less than a minute ago")  # no restart storm on a broken install
                 self.started = time.time()
-                self.proc = subprocess.Popen([VENV_PY, self.script, self.folder], stdin=subprocess.PIPE,
+                self.proc = subprocess.Popen((NICE if self.low else []) + [VENV_PY, self.script, self.folder], stdin=subprocess.PIPE,
                                              stdout=subprocess.PIPE, text=True, bufsize=1)
                 threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
             self.proc.stdin.write(json.dumps({"text": text, "voice": voice, "speed": speed, "out": out}) + "\n")
@@ -334,10 +344,18 @@ class Worker:
             return "down"
         if not ev.wait(wait):
             return "slow"
-        return "ok" if os.path.exists(out) else "down"
+        if not os.path.exists(out):
+            return "down"
+        cache_added(out)
+        return "ok"
+
+    def stop(self):
+        """Free the memory (Kokoro is ~600 MB) when its voices are not chosen."""
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
 
 
-kokoro = Worker("kokoro", KOKORO_WORKER, KOKORO_DIR, kokoro_ready)
+kokoro = Worker("kokoro", KOKORO_WORKER, KOKORO_DIR, kokoro_ready, low=True)
 piper = Worker("piper", PIPER_WORKER, PIPER_DIR, piper_worker_ready)
 
 
@@ -345,24 +363,43 @@ def cache_path(voice, text, rate):
     return os.path.join(CACHE, voice, hashlib.sha1(("%s\n%.2f" % (text, rate)).encode()).hexdigest() + ".wav")
 
 
+def wav_ok(wav):
+    return bool(wav) and wav[:4] == b"RIFF" and len(wav) > 2044  # header + ~45 ms: never an empty clip
+
+
 def read_cache(path):
     try:
         with open(path, "rb") as f:
             wav = f.read()
         os.utime(path)  # recently used files are pruned last
-        return wav if wav[:4] == b"RIFF" else None
+        return wav if wav_ok(wav) else None
     except OSError:
         return None
 
 
+cache_size = [0]  # bytes in the cache, kept up to date so the cap holds on every write
+
+
+def cache_added(path):
+    try:
+        cache_size[0] += os.path.getsize(path)
+    except OSError:
+        return
+    if cache_size[0] > CACHE_CAP:
+        prune_cache()
+
+
 def write_cache(path, wav):
+    if not wav_ok(wav):
+        return
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".tmp", "wb") as f:
             f.write(wav)
         os.replace(path + ".tmp", path)
     except OSError:
-        pass  # a full disk must never stop speech
+        return  # a full disk must never stop speech
+    cache_added(path)
 
 
 def prune_cache():
@@ -381,49 +418,65 @@ def prune_cache():
             pass
     total = sum(f[1] for f in files)
     for _, size, p in sorted(files):
-        if total <= CACHE_CAP:
+        if total <= CACHE_CAP * 0.9:  # a little headroom, so a full cache is not pruned on every write
             break
         try:
             os.remove(p)
             total -= size
         except OSError:
             pass
+    cache_size[0] = total
 
 
-def piper_say(text, rate, voice, path, wait, queue=5.0, low=False):
-    """(wav, how) with Piper: the long-lived worker; the binary only if the worker is missing or stuck."""
+def piper_say(text, rate, voice, path, end, low=False):
+    """(wav, how) with Piper by time.time() `end`: the long-lived worker first; the binary when the
+    worker is missing, busy or slow (live only: pre-render never stacks a second Piper)."""
+    left = lambda: end - time.time()  # noqa: E731
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
     except OSError:
         pass
+    how = "piper-binary"
     if voice in piper_voices():
-        r = piper.render(text, voice, rate, path, wait, queue)
+        # live: at most 6 s for the worker, so the binary still has time if the worker is stuck
+        r = piper.render(text, voice, rate, path, 60.0 if low else max(0.5, min(6.0, left() - 7)),
+                         queue=3.0 if low else max(0.1, min(3.0, left() - 13)))
         if r == "ok":
             wav = read_cache(path)
             if wav:
                 return wav, "piper"
-        if r == "slow":
-            return None, "piper-slow"  # still working; a second Piper would only slow it down more
-    wav = piper_wav(text, rate, voice, low)
+        if low and r in ("slow", "busy"):
+            return None, "piper-" + r
+        how = "piper-binary after " + r
+    wav = piper_wav(text, rate, voice, low, end=None if low else end)
     if wav:
         write_cache(path, wav)
-    return wav, "piper-binary"
+    return wav, how
+
+
+LIVE_BUDGET = 17.0  # seconds; the page waits 20
 
 
 def speak(text, rate, voice, wait):
-    """(wav or None, how). Disk cache first; Kokoro if chosen and done within `wait` s; else Piper (Ryan)."""
+    """(wav or None, how). Disk cache first (the big buttons always from the startup cache); Kokoro if
+    chosen and done within `wait` s; else Piper (Ryan), all within LIVE_BUDGET."""
+    end = time.time() + LIVE_BUDGET
     rate = min(max(float(rate or 1.0), 0.5), 2.0)
     voice = pick_voice(voice) or PIPER_DEFAULT  # no engine at all: the disk cache may still have it
     path = cache_path(voice, text, rate)
     wav = read_cache(path)
     if wav:
         return wav, "cache " + voice
+    if text in CORE and voice != PIPER_DEFAULT:
+        wav = read_cache(cache_path(PIPER_DEFAULT, text, rate))  # never wait for HELP
+        if wav:
+            return wav, "cache " + PIPER_DEFAULT
     if voice.startswith("kokoro-"):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
         except OSError:
             pass  # disk trouble: the worker fails and Piper answers
-        if kokoro.render(text, voice[7:], rate, path, wait) == "ok":
+        if kokoro.render(text, voice[7:], rate, path, min(wait, LIVE_BUDGET - 9)) == "ok":
             wav = read_cache(path)
             if wav:
                 return wav, "kokoro " + voice
@@ -433,7 +486,7 @@ def speak(text, rate, voice, wait):
         wav = read_cache(path)
         if wav:
             return wav, "cache " + voice
-    wav, how = piper_say(text, rate, voice, path, 15.0)
+    wav, how = piper_say(text, rate, voice, path, end)
     return wav, how + " " + voice
 
 
@@ -473,6 +526,12 @@ def wake_prerender(d):
 
 
 last_live = [0.0]  # time of the last tap; pre-render steps aside for it
+live_waiting = [0]  # /speak requests in progress: pre-render pauses while any is waiting
+live_lock = threading.Lock()
+
+
+def live_busy():
+    return live_waiting[0] > 0 or time.time() - last_live[0] < 3
 
 
 def prerender_once():
@@ -485,6 +544,8 @@ def prerender_once():
     voice = pick_voice(str(s.get("voice") or ""))
     if not voice:
         return
+    if not voice.startswith("kokoro-"):
+        kokoro.stop()  # a Piper voice is chosen: no Kokoro process, no 600 MB
     texts = list(dict.fromkeys([*CORE, *(p.strip() for c in d["categories"] for p in c.get("phrases", []) if p.strip())]))
     jobs = [(voice, t) for t in texts]
     if voice.startswith("kokoro-") and pick_voice(PIPER_DEFAULT) == PIPER_DEFAULT:
@@ -495,8 +556,8 @@ def prerender_once():
             return  # phrases or voice changed: start over (done ones are skipped quickly)
         path = cache_path(v, t, rate)
         while not os.path.exists(path):
-            if time.time() - last_live[0] < 3:
-                time.sleep(0.5)  # a live tap goes first
+            if live_busy():
+                time.sleep(0.2)  # live speech always goes first
                 continue
             if v.startswith("kokoro-"):
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -508,7 +569,9 @@ def prerender_once():
                     prep["error"] = "The %s voice is not working; Ryan is used." % v[7:]
                     return
             else:
-                wav, _ = piper_say(t, rate, v, path, 60.0, queue=30.0, low=True)
+                wav, how = piper_say(t, rate, v, path, time.time() + 60, low=True)
+                if how in ("piper-busy", "piper-slow"):
+                    continue  # a live request has the worker: wait and try again
                 if not wav:
                     return
             break
@@ -711,6 +774,16 @@ def check_app(root, scratch):
     raise UpdateError("The new version did not start in a test run, so it was not used. Nothing was changed.")
 
 
+MIN_FREE = int(os.environ.get("VOICEBOX_MIN_FREE", str(1024 ** 3)))  # his data and backups always keep room
+
+
+def room_for_models():
+    try:
+        return shutil.disk_usage(HOME).free >= MIN_FREE
+    except OSError:
+        return False
+
+
 def fetch_voices(root):
     """Download the voices in the update's voices.txt that are missing (Piper; Kokoro files only if
     install.sh set up its venv). Never blocks the update. Returns notes for the family."""
@@ -721,6 +794,9 @@ def fetch_voices(root):
             continue
         onnx, js = os.path.join(PIPER_DIR, vid + ".onnx"), os.path.join(PIPER_DIR, vid + ".onnx.json")
         if os.path.isfile(js) and os.path.isfile(onnx) and os.path.getsize(onnx) > 1000000:
+            continue
+        if not room_for_models():
+            notes.append("Voice %s skipped: less than 1 GB free on the disk" % name)
             continue
         try:
             download(VOICES_URL + spec + ".onnx.json", js, 1024 * 1024)  # json first: Piper needs it once .onnx appears
@@ -740,6 +816,9 @@ def fetch_voices(root):
         for f, sha in KOKORO_FILES.items():
             if os.path.isfile(os.path.join(KOKORO_DIR, f)):
                 continue
+            if not room_for_models():
+                notes.append("Kokoro file %s skipped: less than 1 GB free on the disk" % f)
+                continue
             try:
                 download(KOKORO_URL + f, os.path.join(KOKORO_DIR, f), MAX_KOKORO, sha)
                 notes.append("Downloaded " + f)
@@ -758,12 +837,16 @@ def rm(path):
 
 def swap_in(src, version):
     """Keep the current app as app.prev and put src's files in. All copying happens first
-    (a full disk changes nothing); then only renames, like install.sh's .new pattern."""
+    (a full disk changes nothing); then app.prev is put in place BEFORE app/ changes, so
+    bootguard.sh can always roll back; then only renames, like install.sh's .new pattern.
+    While an earlier update is still unproven (update-pending), app.prev (the last good one) is kept."""
     stage = PREV + ".new"
+    keep_prev = src != PREV and pending_version() is not None and os.path.isdir(PREV)  # Undo always swaps
     news = [os.path.join(APP, n + ".new") for n in APP_FILES] + [os.path.join(APP, "VERSION.new")]
     try:
         rm(stage)
-        shutil.copytree(APP, stage, symlinks=True)
+        if not keep_prev:
+            shutil.copytree(APP, stage, symlinks=True)
         for n in APP_FILES:
             s, d = os.path.join(src, n), os.path.join(APP, n + ".new")
             rm(d)
@@ -782,6 +865,11 @@ def swap_in(src, version):
                 pass
         raise UpdateError("Could not copy the files (%s). Nothing was changed." % (e.strerror or e))
     try:
+        if not keep_prev:
+            rm(os.path.join(HOME, "app.bad"))  # left by an old finished rollback; nothing is pending
+            rm(PREV)
+            os.rename(stage, PREV)
+        write_pending(version)  # from here on a crash or a broken version rolls back by itself
         for n in APP_FILES + ("VERSION",):
             new, cur = os.path.join(APP, n + ".new"), os.path.join(APP, n)
             if not os.path.lexists(new):
@@ -795,21 +883,43 @@ def swap_in(src, version):
                 rm(cur + ".old")
             else:
                 os.replace(new, cur)  # a running kiosk.sh keeps reading its old copy
-        rm(PREV)
-        os.rename(stage, PREV)
     except OSError as e:
-        raise UpdateError("The update stopped half way (%s). Tap Undo last update, or run install.sh." % (e.strerror or e))
+        restart_soon()  # bootguard.sh rolls back after 3 failed starts of a half version
+        raise UpdateError("The update stopped half way (%s). VoiceBox restarts; if it does not work it goes "
+                          "back to the previous version by itself." % (e.strerror or e))
 
 
-PENDING = os.path.join(HOME, "update-pending")  # bootguard.sh puts app.prev back if the new version keeps crashing
-HEALTHY_AFTER = float(os.environ.get("VOICEBOX_HEALTHY_AFTER", "30"))
+PENDING = os.path.join(HOME, "update-pending")  # "<version> <starts>"; bootguard.sh rolls back a version that fails
+STARTED_VERSION = installed_version()  # the version THIS process runs (VERSION on disk may already be newer)
+speak_ok = threading.Event()  # set by the first /speak that returned audio
+
+
+def pending_version():
+    try:
+        with open(PENDING) as f:
+            return (f.read().split() or [""])[0]
+    except OSError:
+        return None
+
+
+def write_pending(version):
+    with open(PENDING + ".tmp", "w") as f:
+        f.write("%s 0\n" % version)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(PENDING + ".tmp", PENDING)
 
 
 def mark_healthy():
+    """Called when the page has loaded (POST /healthy) and a /speak worked. Only clears the marker of
+    the version this process runs: an old server must never clear a newer update's marker."""
+    if not speak_ok.is_set() or pending_version() != STARTED_VERSION:
+        return False
     try:
         os.remove(PENDING)
     except OSError:
         pass
+    return True
 
 
 def restart_soon():
@@ -847,8 +957,6 @@ def run_update(path):
             check_app(root, scratch)
             notes = fetch_voices(root)
             swap_in(root, version)
-        with open(PENDING, "w") as f:
-            f.write("0\n")
         restart_soon()
         return {"ok": True, "version": version, "notes": notes}, 200
     except UpdateError as e:
@@ -946,15 +1054,22 @@ class Handler(SimpleHTTPRequestHandler):
             if not text:
                 return self.send_json({"error": "no text"}, 400)
             last_live[0] = t0 = time.time()
+            with live_lock:
+                live_waiting[0] += 1
             try:  # Kokoro gets a share of the page's timeout; then Piper answers instead
                 wav, how = speak(text, req.get("rate"), str(req.get("voice") or ""), min(8.0, 1.5 + 0.03 * len(text)))
             except Exception as e:
                 sys.stderr.write("speech failed: %r\n" % e)
                 wav, how = None, "error %r" % e
+            finally:
+                with live_lock:
+                    live_waiting[0] -= 1
+                last_live[0] = time.time()
             log_speak("%s %6d ms %s %s chars=%d" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                                    (time.time() - t0) * 1000, 200 if wav else 503, how, len(text)))
             if not wav:
                 return self.send_json({"error": "piper unavailable"}, 503)
+            speak_ok.set()
             self.send_response(200)
             self.send_header("Content-Type", "audio/wav")
             self.send_header("Content-Length", str(len(wav)))
@@ -984,6 +1099,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True})
             threading.Timer(0.5, kill_browser).start()
             return
+        if self.path == "/healthy":  # the page finished starting
+            return self.send_json({"ok": True, "cleared": mark_healthy()})
         if self.path in ("/update/check", "/update/install", "/update/undo"):
             return self.send_json(*run_update(self.path))
         if self.path == "/ai":
@@ -998,9 +1115,6 @@ def main():
     os.makedirs(HOME, exist_ok=True)
     load()  # recover a corrupt file at startup, not on first tap
     prune_cache()
-    healthy = threading.Timer(HEALTHY_AFTER, mark_healthy)  # up this long: the update (if any) is good
-    healthy.daemon = True
-    healthy.start()
     threading.Thread(target=prerender_loop, daemon=True).start()
     prep_wake.set()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
