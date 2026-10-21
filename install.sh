@@ -85,6 +85,18 @@ rm -rf "$APP/static" && cp -r "$SRC/static" "$APP/static"
 chmod +x "$APP/kiosk.sh"
 ok "app copied to $APP (your phrases and data in $VB/data.json are not touched)"
 
+# Names stay out of the public repo: pass them at install, e.g. VOICEBOX_PEOPLE="Ann,Bob" bash install.sh
+if [ -n "${VOICEBOX_PEOPLE:-}" ]; then
+  VOICEBOX_PEOPLE="$VOICEBOX_PEOPLE" python3 -c '
+import os, sys
+sys.path.insert(0, sys.argv[1]); import server
+d = server.load()
+people = next(c for c in d["categories"] if c["id"] == "people")["phrases"]
+for n in (x.strip() for x in os.environ["VOICEBOX_PEOPLE"].split(",")):
+    if n and n not in people: people.append(n)
+server.save(d)' "$APP" && ok "family names added to the People tile" || warn "could not add family names (add them in Settings)"
+fi
+
 step "Background service"
 mkdir -p "$HOME/.config/systemd/user"
 cat >"$HOME/.config/systemd/user/voicebox.service" <<EOF

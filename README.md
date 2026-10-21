@@ -27,7 +27,7 @@ A half-typed message is kept, even if the tablet restarts. Nothing clears by its
 ## Install (once, with internet)
 
 1. Copy this folder onto the Surface (USB stick or `git clone`).
-2. Open a Terminal in the folder and run: `bash install.sh`
+2. Open a Terminal in the folder and run: `bash install.sh`. To fill the People tile at the same time: `VOICEBOX_PEOPLE="Name1,Name2" bash install.sh` (names stay on the Surface only).
 3. Type the password when asked. At the end it prints a summary. Lines marked `CHECK` need a look.
 4. Restart the Surface. It logs in by itself and VoiceBox fills the screen.
 
