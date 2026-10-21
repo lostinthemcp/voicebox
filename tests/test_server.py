@@ -214,6 +214,21 @@ class ServerTest(Base):
         self.assertIn({"id": "en_US-ryan-medium", "name": "Ryan"}, self.req("/voices")[1])
 
 
+def wav_bytes(n=4800):
+    import wave
+    b = io.BytesIO()
+    with wave.open(b, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050); w.writeframes(bytes(n))
+    return b.getvalue()
+
+
+def put_cached(home, text, voice="en_US-ryan-medium", rate=1.0):
+    import hashlib
+    p = os.path.join(home, "cache", voice, hashlib.sha1(("%s\n%.2f" % (text, rate)).encode()).hexdigest() + ".wav")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    pathlib.Path(p).write_bytes(wav_bytes())
+
+
 def tree(d):
     out = {}
     for base, _, files in os.walk(d):
@@ -372,34 +387,80 @@ class UpdateTest(Base):
         self.assertIn(b"did not start in a test run", j)
         self.assertEqual(tree(self.app), app)
 
+    def test_health_is_tied_to_its_version(self):
+        self.make_tarball()
+        put_cached(self.home, "Yes")
+        self.start()
+        pending = os.path.join(self.home, "update-pending")
+        self.assertEqual(self.req("/update/install", {})[0], 200)
+        self.assertEqual(pathlib.Path(pending).read_text().split(), [self.NEW, "0"])  # written before the swap
+        # the OLD server (still up for 0.5 s) must not clear the NEW version's marker
+        self.req("/speak", {"text": "Yes", "rate": 1}, raw=True)
+        self.req("/healthy", {})
+        self.wait_exit()
+        self.assertTrue(os.path.exists(pending))
+        self.start()
+        self.assertFalse(self.req("/healthy", {})[1]["cleared"], "no /speak yet: not healthy")
+        self.assertTrue(os.path.exists(pending))
+        self.assertEqual(self.req("/speak", {"text": "Yes", "rate": 1}, raw=True)[0], 200)
+        self.assertTrue(self.req("/healthy", {})[1]["cleared"])
+        self.assertFalse(os.path.exists(pending))
+
+    def guard(self, *args, path=None):
+        g = os.path.join(self.home, "bootguard.sh")
+        shutil.copy2(os.path.join(ROOT, "bootguard.sh"), g)
+        env = dict(os.environ, PATH=path) if path else None
+        subprocess.run(["bash", g, *args], check=True, env=env, stderr=subprocess.DEVNULL)
+
     def test_bootguard_rolls_back_a_crashing_update(self):
-        self.extra_env = dict(self.extra_env, VOICEBOX_HEALTHY_AFTER="1")
         self.make_tarball()
         self.start()
         old_app = tree(self.app)
         self.assertEqual(self.req("/update/install", {})[0], 200)
         self.wait_exit()
-        pending = os.path.join(self.home, "update-pending")
-        self.assertTrue(os.path.exists(pending))
-        # a healthy new version clears the marker after VOICEBOX_HEALTHY_AFTER seconds
-        self.start()
-        time.sleep(1.8)
-        self.assertFalse(os.path.exists(pending))
-        self.stop()
-        # a broken one: systemd keeps starting it, bootguard.sh puts app.prev back on the 4th start
-        new_app = tree(self.app)
-        pathlib.Path(pending).write_text("0\n")
-        guard = os.path.join(self.home, "bootguard.sh")
-        shutil.copy2(os.path.join(ROOT, "bootguard.sh"), guard)
+        new_app, pending = tree(self.app), os.path.join(self.home, "update-pending")
+        # systemd keeps starting the broken one; bootguard.sh puts app.prev back on the 4th start
         for n in (1, 2, 3):
-            subprocess.run(["bash", guard], check=True)
+            self.guard()
             self.assertEqual(tree(self.app), new_app, n)
-        subprocess.run(["bash", guard], check=True)
+        self.assertEqual(pathlib.Path(pending).read_text().split(), [self.NEW, "3"])
+        self.guard()
         self.assertEqual(tree(self.app), old_app)
         self.assertEqual(tree(self.app + ".prev"), new_app)
         self.assertFalse(os.path.exists(pending))
-        subprocess.run(["bash", guard], check=True)  # no marker: does nothing
+        self.guard()  # no marker: does nothing
         self.assertEqual(tree(self.app), old_app)
+
+    def test_bootguard_survives_an_interrupted_rollback(self):
+        self.make_tarball()
+        self.start()
+        old_app = tree(self.app)
+        self.assertEqual(self.req("/update/install", {})[0], 200)
+        self.wait_exit()
+        new_app, pending = tree(self.app), os.path.join(self.home, "update-pending")
+        # power cut right after step 1 (app -> app.bad): the next start finishes the job
+        os.rename(self.app, os.path.join(self.home, "app.bad"))
+        self.guard("--now")
+        self.assertEqual(tree(self.app), old_app)
+        self.assertEqual(tree(self.app + ".prev"), new_app)
+        self.assertFalse(os.path.exists(pending))
+        # a rollback whose second rename fails: nothing is deleted, the marker stays, the next start retries
+        os.rename(self.app, self.app + ".tmp")  # make app = new (bad), app.prev = old (good) again
+        os.rename(self.app + ".prev", self.app)
+        os.rename(self.app + ".tmp", self.app + ".prev")
+        fakebin = os.path.join(self.home, "fakebin")
+        os.makedirs(fakebin)
+        pathlib.Path(fakebin, "mv").write_text('#!/bin/bash\ncase "$1" in *app.prev) exit 1;; esac\nexec /bin/mv "$@"\n')
+        os.chmod(os.path.join(fakebin, "mv"), 0o755)
+        pathlib.Path(pending).write_text("bad 3\n")
+        self.guard("--now", path=fakebin + ":" + os.environ["PATH"])
+        self.assertFalse(os.path.exists(self.app), "step 1 done")
+        self.assertTrue(os.path.isdir(os.path.join(self.home, "app.bad")) and os.path.isdir(self.app + ".prev"), "nothing deleted")
+        self.assertTrue(os.path.exists(pending), "marker kept until app/ is back")
+        self.assertIn("ROLLBACK FAILED", pathlib.Path(self.home, "bootguard.log").read_text())
+        self.guard()  # the next start, with a working mv
+        self.assertEqual(tree(self.app), old_app)
+        self.assertFalse(os.path.exists(pending))
 
     def test_update_endpoints_guarded(self):
         self.make_tarball()
@@ -474,6 +535,38 @@ class SpeechTest(Base):
         self.assertEqual(self.req("/speak", {"text": "Yes", "rate": 1}, raw=True)[0], 200)
         self.assertEqual(self.req("/speak", {"text": "Never said before", "rate": 1})[0], 503)
 
+    def test_kokoro_runs_only_when_chosen(self):
+        kdir = os.path.join(self.home, "kokoro")
+        os.makedirs(os.path.join(kdir, "venv", "bin"))
+        os.symlink(sys.executable, os.path.join(kdir, "venv", "bin", "python3"))
+        for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+            pathlib.Path(kdir, f).write_text("fake")
+        worker = os.path.join(self.home, "fake_worker.py")
+        pathlib.Path(worker).write_text("import os, sys\nopen(os.path.join(sys.argv[1], 'started.pid'), 'w').write(str(os.getpid()))\n" + FAKE_WORKER)
+        self.extra_env = {"VOICEBOX_KOKORO_WORKER": worker, "VOICEBOX_PIPER_WORKER": "/nonexistent"}
+        self.start()
+        ryan = dict(SMALL, settings={"voice": "", "rate": 1.0})
+        self.req("/data", ryan)
+        self.wait_prepared()
+        time.sleep(0.5)
+        pid_file = os.path.join(kdir, "started.pid")
+        self.assertFalse(os.path.exists(pid_file), "Ryan chosen: no Kokoro process (no 600 MB)")
+        self.req("/data", SMALL)  # Michael
+        for _ in range(100):
+            p = self.req("/prepare")[1]
+            if p["voice"] == "kokoro-am_michael" and p["done"] == p["total"]:
+                break
+            time.sleep(0.1)
+        pid = int(pathlib.Path(pid_file).read_text())
+        self.assertTrue(os.path.exists("/proc/%d" % pid))
+        self.req("/data", ryan)  # back to Ryan: Kokoro stops
+        for _ in range(50):
+            if not os.path.exists("/proc/%d" % pid) or "Z" in pathlib.Path("/proc/%d/stat" % pid).read_text().split()[2]:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("Kokoro worker still running after switching to Ryan")
+
     def test_kokoro_worker(self):
         kdir = os.path.join(self.home, "kokoro")
         os.makedirs(os.path.join(kdir, "venv", "bin"))
@@ -510,27 +603,67 @@ class SpeechTest(Base):
 class WorkerTest(Base):
     """The fast Piper worker (faked: no real model needed) and the battery reading."""
 
-    def test_slow_piper_worker_still_answers(self):
+    def fake_piper(self, sleep, binary=False):
         pdir = os.path.join(self.home, "piper")
         os.makedirs(pdir)
-        pathlib.Path(pdir, "en_US-ryan-medium.onnx").write_text("fake")  # no piper program: worker only
+        pathlib.Path(pdir, "en_US-ryan-medium.onnx").write_text("fake")
+        if binary:  # a fake piper program: answers at once with a different (longer) clip
+            os.makedirs(os.path.join(pdir, "piper"))
+            b = os.path.join(pdir, "piper", "piper")
+            pathlib.Path(b).write_text("#!%s\nimport sys, io, wave\nsys.stdin.read()\nb = io.BytesIO()\n"
+                                       "w = wave.open(b, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)\n"
+                                       "w.writeframes(bytes(9000)); w.close(); sys.stdout.buffer.write(b.getvalue())\n" % sys.executable)
+            os.chmod(b, 0o755)
         os.makedirs(os.path.join(self.home, "kokoro", "venv", "bin"))
         os.symlink(sys.executable, os.path.join(self.home, "kokoro", "venv", "bin", "python3"))
         worker = os.path.join(self.home, "fake_piper.py")
-        pathlib.Path(worker).write_text(FAKE_WORKER.replace("time.sleep(5)", "time.sleep(6)").replace('"slow" in', '"zzslow" in'))
+        pathlib.Path(worker).write_text(FAKE_WORKER.replace("time.sleep(5)", "time.sleep(%d)" % sleep).replace('"slow" in', '"zzslow" in'))
         self.extra_env = {"VOICEBOX_PIPER_WORKER": worker}
         self.start()
+
+    def test_slow_piper_worker_still_answers(self):
+        self.fake_piper(4)  # no piper program: the worker is the only way
         t = time.time()
         code, wav = self.req("/speak", {"text": "hi zzslow", "rate": 1}, raw=True)  # not in any default phrase
         took = time.time() - t
         self.assertEqual(code, 200)
-        self.assertEqual(len(wav), 44 + 4800)  # the worker's answer, after its 6 s
-        self.assertGreater(took, 5.5)
+        self.assertEqual(len(wav), 44 + 4800)  # the worker's answer, after its 4 s
+        self.assertGreater(took, 3.5)
         code, wav = self.req("/speak", {"text": "hi zzslow", "rate": 1}, raw=True)
         self.assertEqual((code, len(wav)), (200, 44 + 4800))  # now from the disk cache
         log = pathlib.Path(self.home, "speak.log").read_text().splitlines()
-        self.assertRegex(log[-2], r" +[6-9]\d{3} ms 200 piper en_US-ryan-medium chars=9$")
+        self.assertRegex(log[-2], r" +[4-5]\d{3} ms 200 piper en_US-ryan-medium chars=9$")
         self.assertIn("ms 200 cache en_US-ryan-medium", log[-1])
+
+    def test_stuck_piper_worker_falls_back_to_the_program(self):
+        self.fake_piper(60, binary=True)
+        t = time.time()
+        code, wav = self.req("/speak", {"text": "hi zzslow", "rate": 1}, raw=True)
+        took = time.time() - t
+        self.assertEqual(code, 200)
+        self.assertEqual(len(wav), 44 + 9000, "the piper program answered")
+        self.assertLess(took, 9, "within the live budget (page waits 20 s)")
+        self.assertIn("200 piper-binary after slow", pathlib.Path(self.home, "speak.log").read_text())
+        # YES is in the startup cache: instant even while the worker is stuck
+        t = time.time()
+        self.assertEqual(self.req("/speak", {"text": "Yes", "rate": 1}, raw=True)[0], 200)
+        self.assertLess(time.time() - t, 1)
+
+    def test_nice_is_a_prefix_not_preexec_fn(self):
+        src = pathlib.Path(ROOT, "server.py").read_text()
+        self.assertNotIn("preexec_fn", src)  # it can deadlock a threaded server on fork
+        os.environ["VOICEBOX_HOME"] = self.home
+        sys.path.insert(0, ROOT)
+        import importlib
+        import server
+        importlib.reload(server)
+        os.makedirs(os.path.join(self.home, "piper", "piper"))
+        pathlib.Path(self.home, "piper", "en_US-ryan-medium.onnx").write_text("fake")
+        b = os.path.join(self.home, "piper", "piper", "piper")
+        pathlib.Path(b).write_text("#!/bin/bash\ncat >/dev/null\nprintf 'RIFF%04d' \"$(nice)\"\nhead -c 3000 /dev/zero\n")
+        os.chmod(b, 0o755)
+        self.assertEqual(server.piper_wav("x", 1.0, "en_US-ryan-medium", low=True)[:8], b"RIFF%04d" % (os.nice(0) + 10))
+        self.assertEqual(server.piper_wav("x", 1.0, "en_US-ryan-medium")[:8], b"RIFF%04d" % os.nice(0))
 
     def test_battery(self):
         power = os.path.join(self.home, "power")
@@ -544,6 +677,70 @@ class WorkerTest(Base):
         self.assertEqual(self.req("/battery")[1], {"percent": 17, "status": "Discharging", "plugged": False})
         pathlib.Path(power, "BAT1", "status").write_text("Charging\n")
         self.assertTrue(self.req("/battery")[1]["plugged"])
+
+
+
+class InstallTest(unittest.TestCase):
+    """install.sh re-run with every system tool faked (no sudo, no network): it keeps the working app
+    as app.prev and writes update-pending BEFORE touching app/, and puts it back if its copy fails."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="vbinst-")
+        self.vb = os.path.join(self.home, ".local", "share", "voicebox")
+        self.app = os.path.join(self.vb, "app")
+        os.makedirs(self.app)
+        for f in ("server.py", "kiosk.sh"):
+            shutil.copy2(os.path.join(ROOT, f), self.app)
+        shutil.copytree(os.path.join(ROOT, "static"), os.path.join(self.app, "static"))
+        pathlib.Path(self.app, "VERSION").write_text("old\n")
+        pathlib.Path(self.vb, "data.json").write_text('{"categories": []}')
+        kv = os.path.join(self.vb, "kokoro", "venv", "bin")
+        os.makedirs(kv)
+        self.bin = os.path.join(self.home, "fakebin")
+        os.makedirs(self.bin)
+        fakes = {"id": 'echo 1000', "curl": "exit 1", "pactl": "exit 1", "xinput": "exit 1", "flatpak": "exit 1",
+                 "gsettings": "exit 1", "xdg-user-dir": 'echo "$HOME/Desktop"', "dpkg-query": "exit 1"}
+        for name in ("sudo", "apt-get", "apt-cache", "dpkg", "systemctl", "gio", "chromium", "groupadd", "usermod"):
+            fakes[name] = "exit 0"
+        for name, body in fakes.items():
+            self.fake(name, body)
+        for name in ("python3", "pip"):  # the speech-engine venv: present, but pip fails (no network)
+            pathlib.Path(kv, name).write_text("#!/bin/bash\nexit 1\n")
+            os.chmod(os.path.join(kv, name), 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def fake(self, name, body):
+        pathlib.Path(self.bin, name).write_text("#!/bin/bash\n%s\n" % body)
+        os.chmod(os.path.join(self.bin, name), 0o755)
+
+    def install(self):
+        env = dict(os.environ, HOME=self.home, PATH=self.bin + ":" + os.environ["PATH"])
+        env.pop("VOICEBOX_PEOPLE", None)
+        return subprocess.run(["bash", os.path.join(ROOT, "install.sh")], env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=120)
+
+    def test_rerun_keeps_the_old_app_first(self):
+        old, data = tree(self.app), pathlib.Path(self.vb, "data.json").read_bytes()
+        r = self.install()
+        sha = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(tree(self.app + ".prev"), old, r.stdout)
+        self.assertEqual(pathlib.Path(self.vb, "update-pending").read_text().split(), [sha, "0"])
+        self.assertEqual(pathlib.Path(self.app, "VERSION").read_text().strip(), sha)
+        self.assertTrue(os.path.exists(os.path.join(self.app, "piper_worker.py")))
+        self.assertTrue(os.access(os.path.join(self.vb, "bootguard.sh"), os.X_OK))
+        self.assertEqual(pathlib.Path(self.vb, "data.json").read_bytes(), data)
+        self.assertNotIn("not updated", r.stdout)
+
+    def test_failed_copy_puts_the_old_app_back(self):
+        self.fake("cp", 'case "${@: -1}" in *piper_worker.py.new) exit 1;; esac\nexec /usr/bin/cp "$@"')
+        old = tree(self.app)
+        r = self.install()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("The previous version was put back", r.stdout)
+        self.assertEqual(tree(self.app), old, "server.py was already replaced; the rollback undid it")
+        self.assertFalse(os.path.exists(os.path.join(self.vb, "update-pending")))
 
 
 class RepoCopyTest(Base):

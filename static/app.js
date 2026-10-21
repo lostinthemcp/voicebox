@@ -65,10 +65,13 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* privat
 // ---------- speech ----------
 // One generous timeout: a slow Surface must never lose short typed text to an early give-up
 // (the browser voice on that box is silent). Only a real error or 503 falls back.
+// The big buttons are always in the server's startup cache: if even they take 2 s, the server is hung,
+// so they go straight to the browser voice / big text instead of waiting 20 s.
+const CORE = new Set(["Yes", "No", "I'm not sure, ask me another way.", "Hold on. Give me a minute, I'm typing.", "I need help"]);
 let waitingFor = 0;
 function fetchWav(text) {
   const s = settings(), ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 20000);
+  const t = setTimeout(() => ctl.abort(), CORE.has(text) ? 2000 : 20000);
   document.body.classList.toggle("waiting", ++waitingFor > 0);
   return fetch("/speak", { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, rate: s.rate, voice: s.voice }) })
@@ -89,7 +92,20 @@ async function showBattery() {
     e.setAttribute("aria-label", "Battery " + b.percent + " percent" + (b.plugged ? ", charging" : "") + (low ? ", plug in" : ""));
   } catch (err) { /* server restarting: keep the last reading */ }
 }
-// split: typed text is spoken a sentence at a time, the next one rendering while this one plays
+// one clip: "ended", "paused" (a newer tap) or "error" (a broken or unplayable clip)
+function playBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  audio = new Audio(url);
+  const a = audio;
+  return new Promise((res) => {
+    a.onended = () => res("ended");
+    a.onpause = () => res(a.ended ? "ended" : "paused");
+    a.onerror = () => res("error");
+    a.play().catch(() => res("error"));
+  }).finally(() => URL.revokeObjectURL(url));
+}
+// split: typed text is spoken a sentence at a time, the next one rendering while this one plays.
+// A sentence whose clip will not play is fetched once more; if it fails again it is shown big.
 async function play(text, split = false) {
   const my = ++speechSeq;
   if (audio) { audio.pause(); audio = null; }
@@ -97,21 +113,19 @@ async function play(text, split = false) {
   const parts = split ? (text.match(/[^.!?]+[.!?]*/g) || [text]).map((x) => x.trim()).filter(Boolean) : [text];
   let next = fetchWav(parts[0]);
   for (let i = 0; i < parts.length; i++) {
-    try {
-      const blob = await next;
-      if (my !== speechSeq) return; // he already tapped something newer
-      if (i + 1 < parts.length) { next = fetchWav(parts[i + 1]); next.catch(() => {}); }
-      const url = URL.createObjectURL(blob);
-      audio = new Audio(url);
-      const ended = new Promise((res) => { audio.onended = audio.onerror = audio.onpause = res; }); // pause = a newer tap
-      await audio.play();
-      await ended;
-      URL.revokeObjectURL(url);
-      if (my !== speechSeq) return;
-    } catch (e) {
-      if (my === speechSeq) fallbackSpeak(parts.slice(i).join(" "));
+    let blob;
+    try { blob = await next; } catch (e) {
+      if (my === speechSeq) fallbackSpeak(parts.slice(i).join(" ")); // server down, hung or 503
       return;
     }
+    if (my !== speechSeq) return; // he already tapped something newer
+    if (i + 1 < parts.length) { next = fetchWav(parts[i + 1]); next.catch(() => {}); }
+    let r = await playBlob(blob);
+    if (r === "error" && my === speechSeq) {
+      try { r = await playBlob(await fetchWav(parts[i])); } catch (e) { r = "error"; }
+    }
+    if (my !== speechSeq || r === "paused") return;
+    if (r === "error") showBig(parts[i]);
   }
 }
 function fallbackSpeak(text) {
@@ -784,5 +798,14 @@ async function start() {
   });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
   document.addEventListener("visibilitychange", () => { if (document.hidden) saveNow(); });
+  // tell the server the page started and speech works, so a fresh update counts as healthy
+  // (bootguard.sh rolls back a version that never gets here)
+  (async function healthy(tries) {
+    try {
+      const r = await fetch("/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "Yes", rate: D.settings.rate, voice: D.settings.voice }) });
+      if (!r.ok) throw new Error(r.status);
+      await fetch("/healthy", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    } catch (e) { if (tries > 1) setTimeout(() => healthy(tries - 1), 30000); }
+  })(10);
 }
 start();

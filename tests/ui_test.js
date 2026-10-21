@@ -270,6 +270,25 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     assert.deepStrictEqual(await page.evaluate(() => window.__spoken), [], "fell back to the browser voice");
     assert(!(await page.evaluate(() => document.body.classList.contains("waiting"))), "'speaking...' stuck on");
     await page.click("#clear");
+    // a broken clip is fetched once more, not skipped
+    await page.unroute("**/speak");
+    let calls = 0;
+    await page.route("**/speak", async (r) => { if (++calls === 1) await r.fulfill({ status: 200, contentType: "audio/wav", body: "not audio" }); else await r.continue(); });
+    const before = await page.evaluate(() => window.__played);
+    await page.waitForTimeout(800);
+    await page.click("#notsure");
+    await page.waitForFunction((b) => window.__played >= b + 2, before, { timeout: 8000 });
+    assert.strictEqual(calls, 2, "broken clip not retried");
+    assert(await page.isHidden("#modal"), "the retry worked, so nothing is shown big");
+    // a hung server: the big buttons give up after 2 s (they are always cached) and use the browser voice
+    await page.unroute("**/speak");
+    await page.route("**/speak", () => { /* never answers */ });
+    await page.evaluate(() => { speechSynthesis.getVoices = () => [{ name: "fake" }]; });
+    await page.waitForTimeout(800);
+    const t0 = Date.now();
+    await page.click("#yes");
+    await page.waitForFunction(() => window.__spoken.includes("Yes"), null, { timeout: 5000 });
+    assert(Date.now() - t0 < 3500, "YES waited too long on a hung server: " + (Date.now() - t0));
     console.log("slow voice: OK");
     await page.close();
   }
