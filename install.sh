@@ -89,6 +89,9 @@ mkdir -p "$APP"
 # copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
 for f in server.py kiosk.sh kokoro_worker.py voices.txt; do cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || { echo "Could not copy $f (disk full?). The app was not updated."; exit 1; }; done
 chmod +x "$APP/kiosk.sh"
+# outside app/, so the in-app updater can never replace the thing that undoes a bad update
+cp -f "$SRC/bootguard.sh" "$VB/bootguard.sh.new" && mv -f "$VB/bootguard.sh.new" "$VB/bootguard.sh" && chmod +x "$VB/bootguard.sh" \
+  || { echo "Could not copy bootguard.sh (disk full?)."; exit 1; }
 rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$APP/static.old" \
   && { [ ! -d "$APP/static" ] || mv "$APP/static" "$APP/static.old"; } && mv "$APP/static.new" "$APP/static" && rm -rf "$APP/static.old" \
   || { echo "Could not copy the app pages (disk full?). Fix that and run install.sh again."; exit 1; }
@@ -146,8 +149,11 @@ mkdir -p "$HOME/.config/systemd/user"
 cat >"$HOME/.config/systemd/user/voicebox.service" <<EOF
 [Unit]
 Description=VoiceBox speech server
+# never give up restarting: this is his voice (bootguard.sh rolls back a broken update)
+StartLimitIntervalSec=0
 
 [Service]
+ExecStartPre=-/bin/bash $VB/bootguard.sh
 ExecStart=/usr/bin/python3 $APP/server.py
 Restart=always
 RestartSec=2
