@@ -735,13 +735,14 @@ async function start() {
   holdButton($("#help"), 1000, helpAlarm);
   showBattery();
   setInterval(showBattery, 60000);
-  // a finger that moved 10 px or more was scrolling a list, not pressing a button
+  // a finger that moved past Chrome's own tap slop (~15 px) inside a list was scrolling, not pressing;
+  // outside lists every tap counts, so a shaky press on a key or tile is never dropped
   let downAt = null, moved = 0;
   for (const area of [$("#panel"), $("#modal")]) {
     area.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; moved = 0; }, true);
     area.addEventListener("pointermove", (e) => { if (downAt) moved = Math.max(moved, Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1])); }, true);
     area.addEventListener("scroll", () => { if (downAt) moved = 99; }, true);
-    area.addEventListener("click", (e) => { if (downAt && moved >= 10) { e.stopPropagation(); e.preventDefault(); } downAt = null; }, true);
+    area.addEventListener("click", (e) => { if (downAt && (moved === 99 || (moved >= 16 && e.target.closest(".scroll")))) { e.stopPropagation(); e.preventDefault(); } downAt = null; }, true);
   }
   addEventListener("resize", sizeRows);
   $("#panel").addEventListener("click", (e) => {

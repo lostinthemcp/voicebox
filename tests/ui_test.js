@@ -113,13 +113,13 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.waitForTimeout(800);
     assert(await page.$eval(".phrases", (g) => g.scrollTop) > 100, "swipe did not scroll");
     assert.strictEqual(await page.textContent("#lastsaid"), before0, "a swipe spoke");
-    // a shaky press that slides 15 px is a scroll, not a press; one that slides 4 px is a press
+    // a shaky press that slides 20 px is a scroll, not a press; one that slides 4 px is a press
     const sb = await page.locator('.phrases button:text-is("I need my glasses")');
     await sb.scrollIntoViewIfNeeded();
     const bb = await sb.boundingBox();
-    await page.mouse.move(bb.x + 30, bb.y + 30); await page.mouse.down(); await page.mouse.move(bb.x + 30, bb.y + 45); await page.mouse.up();
+    await page.mouse.move(bb.x + 30, bb.y + 30); await page.mouse.down(); await page.mouse.move(bb.x + 30, bb.y + 50); await page.mouse.up();
     await page.waitForTimeout(300);
-    assert.strictEqual(await page.textContent("#lastsaid"), before0, "a 15 px slide spoke");
+    assert.strictEqual(await page.textContent("#lastsaid"), before0, "a 20 px slide spoke");
     await shot("4-staff-scrolled");
     await page.mouse.move(bb.x + 30, bb.y + 30); await page.mouse.down(); await page.mouse.move(bb.x + 34, bb.y + 30); await page.mouse.up();
     await said("my glasses");
