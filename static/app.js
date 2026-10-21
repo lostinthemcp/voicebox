@@ -590,6 +590,23 @@ async function renderSettings() {
     }
   }).catch(() => { blist.textContent = "Could not list backups."; });
 
+  body.append(el("h2", { text: "Updates" }));
+  const ustat = el("div", { id: "ustat", class: "small", text: "Needs the internet. Phrases, names and backups are never changed by an update." });
+  const ubar = el("div", { class: "bar" });
+  ubar.append(el("button", { text: "Check for updates", onclick: async () => {
+    ustat.textContent = "Checking...";
+    try {
+      const j = await updatePost("/update/check");
+      if (!j.available) { ustat.textContent = "Up to date (version " + j.current.slice(0, 7) + ")."; return; }
+      ustat.textContent = "Update available.";
+      if (!ubar.querySelector(".install")) ubar.prepend(el("button", { class: "speak install", text: "Install update", onclick: () => runUpdate("/update/install", ustat) }));
+    } catch (e) { ustat.textContent = e.message; }
+  } }));
+  ubar.append(el("button", { text: "Undo last update", onclick: () => {
+    if (confirm("Go back to the version before the last update?")) runUpdate("/update/undo", ustat);
+  } }));
+  body.append(ubar, ustat);
+
   body.append(el("h2", { text: "Leave VoiceBox" }));
   body.append(el("div", { class: "bar" }, el("button", { class: "danger", text: "Exit to desktop", onclick: async () => {
     if (!confirm("Close VoiceBox and go to the desktop? Use the Start VoiceBox icon to come back.")) return;
@@ -609,6 +626,26 @@ function renderSKeys() {
   }, (m) => { skMode = m; renderSKeys(); });
   // keep focus on the input so the on-screen keys don't steal it
   $("#skeys").onpointerdown = (e) => e.preventDefault();
+}
+async function updatePost(path) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "VoiceBox could not do that (error " + r.status + ").");
+  return j;
+}
+// install or undo, then wait for the restarted server to report the new version and reload the page
+async function runUpdate(path, ustat) {
+  await stopSaves(); await saveNow();
+  ustat.textContent = "Updating... this can take a few minutes. Keep the Surface on.";
+  let j;
+  try { j = await updatePost(path); } catch (e) { ustat.textContent = e.message; return; }
+  ustat.textContent = "Restarting VoiceBox..." + (j.notes && j.notes.length ? " (" + j.notes.join(". ") + ")" : "");
+  await sleep(2500); // the old server stops after 0.5 s; don't mistake it for the new one
+  for (let i = 0; i < 90; i++) {
+    try { if ((await (await fetch("/version")).json()).version === j.version) { location.reload(); return; } } catch (e) { /* still restarting */ }
+    await sleep(1000);
+  }
+  ustat.textContent = "VoiceBox did not come back. Restart the Surface.";
 }
 async function reloadData() {
   D = normalize(await (await fetch("/data")).json());

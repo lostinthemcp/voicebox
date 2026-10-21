@@ -7,10 +7,19 @@ import datetime
 import glob
 import json
 import os
+import py_compile
+import re
 import shutil
+import socket
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = os.environ.get("VOICEBOX_HOME") or os.path.expanduser("~/.local/share/voicebox")
@@ -226,6 +235,295 @@ def kill_browser():
             pass
 
 
+# ---------- self-update ----------
+# Updates come ONLY from the `stable` branch, never `main`: stable moves only after independent review,
+# and this tablet is someone's voice. The URLs can be overridden only by whoever starts the server (tests).
+APP = os.path.dirname(os.path.abspath(__file__))
+PREV = APP + ".prev"
+CHECK_URL = os.environ.get("VOICEBOX_UPDATE_CHECK_URL", "https://api.github.com/repos/lostinthemcp/voicebox/commits/stable")
+UPDATE_URL = os.environ.get("VOICEBOX_UPDATE_URL", "https://github.com/lostinthemcp/voicebox/archive/refs/heads/stable.tar.gz")
+VOICES_URL = os.environ.get("VOICEBOX_VOICES_URL", "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/")
+MAX_TARBALL = 20 * 1024 * 1024
+MAX_UNPACKED = 60 * 1024 * 1024
+MAX_VOICE = 300 * 1024 * 1024
+APP_FILES = ("server.py", "kiosk.sh", "static", "voices.txt")
+REQUIRED = ("server.py", "kiosk.sh", "static/index.html", "static/app.js")
+VOICE_LINE = re.compile(r"^[a-z]{2}_[A-Z]{2}/[a-z0-9_]+/(x_low|low|medium|high)/[a-z]{2}_[A-Z]{2}-[a-z0-9_]+-(x_low|low|medium|high)$")
+update_lock = threading.Lock()
+
+
+class UpdateError(Exception):
+    """The message is shown to the family as it is, so it must be plain and true."""
+
+
+def host_ok(url):
+    u = urllib.parse.urlsplit(url)
+    h = u.hostname or ""
+    return u.scheme == "https" and (h in ("api.github.com", "github.com", "codeload.github.com", "huggingface.co")
+                                    or h.endswith(".hf.co"))
+
+
+class SafeRedirect(urllib.request.HTTPRedirectHandler):
+    # github.com -> codeload.github.com, huggingface.co -> *.hf.co; anything else is refused
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not host_ok(newurl):
+            raise UpdateError("A download tried to go to an unexpected site, so it was stopped. Nothing was changed.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(SafeRedirect)
+
+
+def open_url(url, accept="*/*"):
+    return _opener.open(urllib.request.Request(url, headers={"User-Agent": "VoiceBox-updater", "Accept": accept}), timeout=30)
+
+
+def download(url, path, cap):
+    """Stream url to path.part, then rename; never leaves a half file at path."""
+    part = path + ".part"
+    try:
+        n = 0
+        with open_url(url) as r, open(part, "wb") as f:
+            while True:
+                b = r.read(1 << 16)
+                if not b:
+                    break
+                n += len(b)
+                if n > cap:
+                    raise UpdateError("The download was bigger than expected, so it was stopped. Nothing was changed.")
+                f.write(b)
+        if n == 0:
+            raise UpdateError("The download was empty. Nothing was changed.")
+        os.replace(part, path)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+
+
+def installed_version(app=APP):
+    try:
+        with open(os.path.join(app, "VERSION")) as f:
+            return f.read().strip() or "unknown"
+    except OSError:
+        return "unknown"  # an install without a VERSION counts as "update available"
+
+
+def latest_version():
+    with open_url(CHECK_URL, "application/vnd.github.sha") as r:
+        sha = r.read(200).decode("ascii", "replace").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise UpdateError("GitHub gave an answer VoiceBox did not understand. Try again later.")
+    return sha
+
+
+def unpack(tgz, dest):
+    """Extract only plain files and folders under one top folder. Returns (top folder, commit sha)."""
+    unsafe = UpdateError("The update file has unsafe contents, so it was not used. Nothing was changed.")
+    try:
+        t = tarfile.open(tgz, "r:gz")
+    except (tarfile.TarError, OSError, EOFError):
+        raise UpdateError("The update file is damaged. Nothing was changed.")
+    with t:
+        members = t.getmembers()
+        tops = {m.name.split("/")[0] for m in members}
+        if len(tops) != 1 or sum(m.size for m in members) > MAX_UNPACKED:
+            raise unsafe
+        real = os.path.realpath(dest)
+        for m in members:
+            parts = m.name.split("/")
+            out = os.path.realpath(os.path.join(dest, *parts))
+            if m.name.startswith("/") or ".." in parts or "\\" in m.name or not (m.isfile() or m.isdir()) \
+                    or not out.startswith(real + os.sep):
+                raise unsafe  # no symlinks, hard links, devices or paths that climb out
+        for m in members:
+            out = os.path.join(dest, *m.name.split("/"))
+            if m.isdir():
+                os.makedirs(out, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with t.extractfile(m) as src, open(out, "wb") as f:
+                shutil.copyfileobj(src, f)
+            os.chmod(out, 0o755 if m.mode & 0o111 else 0o644)
+        sha = t.pax_headers.get("comment", "")  # GitHub puts the commit id here
+    return os.path.join(dest, tops.pop()), (sha if re.fullmatch(r"[0-9a-f]{40}", sha) else "unknown")
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def check_app(root, scratch):
+    """The new version must have its files, compile, and actually answer in a test run (with throwaway data)."""
+    for f in REQUIRED:
+        if not os.path.isfile(os.path.join(root, f)) or not os.path.getsize(os.path.join(root, f)):
+            raise UpdateError("The update is missing %s, so it was not used. Nothing was changed." % f)
+    try:
+        py_compile.compile(os.path.join(root, "server.py"), cfile=os.path.join(scratch, "check.pyc"), doraise=True)
+    except py_compile.PyCompileError:
+        raise UpdateError("The update has a broken server.py, so it was not used. Nothing was changed.")
+    port = free_port()
+    env = dict(os.environ, VOICEBOX_HOME=os.path.join(scratch, "test-home"), VOICEBOX_PORT=str(port))
+    p = subprocess.Popen([sys.executable, "-I", os.path.join(root, "server.py")], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    local = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        for _ in range(120):  # up to 30 s: the Surface is slow
+            time.sleep(0.25)
+            if p.poll() is not None:
+                break
+            try:
+                if valid(json.load(local.open("http://127.0.0.1:%d/data" % port, timeout=3))) \
+                        and b"<" in local.open("http://127.0.0.1:%d/" % port, timeout=3).read():
+                    return
+            except Exception:
+                continue
+    finally:
+        p.kill()
+        p.wait()
+    raise UpdateError("The new version did not start in a test run, so it was not used. Nothing was changed.")
+
+
+def fetch_voices(root):
+    """Download voices listed in the update's voices.txt that are missing. Returns notes for the family."""
+    notes = []
+    try:
+        with open(os.path.join(root, "voices.txt")) as f:
+            lines = [x.strip() for x in f if x.strip() and not x.startswith("#")]
+    except OSError:
+        return notes
+    if not os.path.isdir(PIPER_DIR):
+        return notes
+    for v in lines:
+        if not VOICE_LINE.match(v):
+            continue
+        name = v.rsplit("/", 1)[1]
+        onnx, js = os.path.join(PIPER_DIR, name + ".onnx"), os.path.join(PIPER_DIR, name + ".onnx.json")
+        if os.path.isfile(js) and os.path.isfile(onnx) and os.path.getsize(onnx) > 1000000:
+            continue
+        try:
+            download(VOICES_URL + v + ".onnx.json", js, 1024 * 1024)  # json first: Piper needs it once .onnx appears
+            with open(js, encoding="utf-8") as f:
+                json.load(f)
+            download(VOICES_URL + v + ".onnx", onnx, MAX_VOICE)
+            if os.path.getsize(onnx) < 1000000:
+                os.remove(onnx)
+                raise ValueError("too small")
+            notes.append("New voice: " + name)
+        except Exception as e:
+            sys.stderr.write("voice %s failed: %s\n" % (name, e))
+            if not os.path.exists(onnx) and os.path.exists(js):
+                os.remove(js)  # no half voice left behind
+            notes.append("Voice %s could not download (try again later)" % name)
+    return notes
+
+
+def rm(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.remove(path)
+
+
+def swap_in(src, version):
+    """Keep the current app as app.prev and put src's files in. All copying happens first
+    (a full disk changes nothing); then only renames, like install.sh's .new pattern."""
+    stage = PREV + ".new"
+    news = [os.path.join(APP, n + ".new") for n in APP_FILES] + [os.path.join(APP, "VERSION.new")]
+    try:
+        rm(stage)
+        shutil.copytree(APP, stage, symlinks=True)
+        for n in APP_FILES:
+            s, d = os.path.join(src, n), os.path.join(APP, n + ".new")
+            rm(d)
+            if os.path.isdir(s):
+                shutil.copytree(s, d)
+            elif os.path.isfile(s):
+                shutil.copy2(s, d)
+        os.chmod(os.path.join(APP, "kiosk.sh.new"), 0o755)
+        with open(os.path.join(APP, "VERSION.new"), "w") as f:
+            f.write(version + "\n")
+    except OSError as e:
+        for p in news + [stage]:
+            try:
+                rm(p)
+            except OSError:
+                pass
+        raise UpdateError("Could not copy the files (%s). Nothing was changed." % (e.strerror or e))
+    try:
+        for n in APP_FILES + ("VERSION",):
+            new, cur = os.path.join(APP, n + ".new"), os.path.join(APP, n)
+            if not os.path.lexists(new):
+                rm(cur)  # not in the new version (e.g. undo to one without voices.txt)
+                continue
+            if os.path.isdir(new):
+                rm(cur + ".old")
+                if os.path.lexists(cur):
+                    os.rename(cur, cur + ".old")
+                os.rename(new, cur)
+                rm(cur + ".old")
+            else:
+                os.replace(new, cur)  # a running kiosk.sh keeps reading its old copy
+        rm(PREV)
+        os.rename(stage, PREV)
+    except OSError as e:
+        raise UpdateError("The update stopped half way (%s). Tap Undo last update, or run install.sh." % (e.strerror or e))
+
+
+def restart_soon():
+    def bye():
+        with lock:  # never in the middle of writing data.json
+            os._exit(0)  # voicebox.service has Restart=always, so systemd starts the new version
+    threading.Timer(0.5, bye).start()
+
+
+def run_update(path):
+    """Returns (json, code). Only one update at a time."""
+    if os.path.realpath(APP) != os.path.realpath(os.path.join(HOME, "app")):
+        return {"error": "Updates only work on the installed VoiceBox (in %s)." % os.path.join(HOME, "app")}, 400
+    if not update_lock.acquire(blocking=False):
+        return {"error": "An update is already running."}, 409
+    scratch = None
+    try:
+        if path == "/update/check":
+            cur, latest = installed_version(), latest_version()
+            return {"current": cur, "latest": latest, "available": cur != latest,
+                    "can_undo": os.path.isdir(PREV), "previous": installed_version(PREV)}, 200
+        scratch = tempfile.mkdtemp(prefix="update-", dir=HOME)
+        notes = []
+        if path == "/update/undo":
+            if not os.path.isdir(PREV):
+                return {"error": "There is no earlier version to go back to."}, 400
+            root, version = PREV, installed_version(PREV)
+            check_app(root, scratch)
+            swap_in(root, version)
+        else:
+            tgz = os.path.join(scratch, "update.tar.gz")
+            download(UPDATE_URL, tgz, MAX_TARBALL)
+            os.mkdir(os.path.join(scratch, "x"))
+            root, version = unpack(tgz, os.path.join(scratch, "x"))
+            check_app(root, scratch)
+            notes = fetch_voices(root)
+            swap_in(root, version)
+        restart_soon()
+        return {"ok": True, "version": version, "notes": notes}, 200
+    except UpdateError as e:
+        return {"error": str(e)}, 502
+    except (urllib.error.URLError, socket.timeout, ConnectionError) as e:
+        sys.stderr.write("update download failed: %r\n" % e)
+        return {"error": "Could not reach GitHub (no internet?). Nothing was changed. Try again later."}, 502
+    except Exception as e:  # before the swap (swap_in only raises UpdateError), so nothing changed
+        sys.stderr.write("update failed: %r\n" % e)
+        return {"error": "The update did not work (%s). Nothing was changed." % e}, 502
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+        update_lock.release()
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=STATIC, **kw)
@@ -277,6 +575,8 @@ class Handler(SimpleHTTPRequestHandler):
                                     "size": os.path.getsize(b)} for b in list_backups()])
         if self.path == "/voices":
             return self.send_json(voices() if os.path.exists(PIPER_BIN) else [])
+        if self.path == "/version":
+            return self.send_json({"version": installed_version()})
         return super().do_GET()
 
     def do_POST(self):
@@ -334,6 +634,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True})
             threading.Timer(0.5, kill_browser).start()
             return
+        if self.path in ("/update/check", "/update/install", "/update/undo"):
+            return self.send_json(*run_update(self.path))
         if self.path == "/ai":
             # Hook for an optional online helper later. Offline core never depends on it.
             if not os.path.exists(AI_KEY):
