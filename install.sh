@@ -140,8 +140,13 @@ copy_failed() {
   exit 1
 }
 # copy to .new, then rename: a running kiosk.sh or server.py is never half-overwritten
-for f in server.py kiosk.sh kokoro_worker.py piper_worker.py powerkey.py voices.txt; do
-  cp -f "$SRC/$f" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || copy_failed "$f"
+# every top-level file of the release goes in (the same rule as the in-app updater, server.py NOT_APP),
+# so a new file can never be left behind again
+for p in "$SRC"/*; do
+  f="$(basename "$p")"
+  [ -f "$p" ] && [ ! -L "$p" ] || continue
+  case "$f" in README.md|install.sh|uninstall.sh|bootguard.sh|needs_install.txt|VERSION|*.new|*.old|*.tmp) continue ;; esac
+  cp -f "$p" "$APP/$f.new" && mv -f "$APP/$f.new" "$APP/$f" || copy_failed "$f"
 done
 chmod +x "$APP/kiosk.sh"
 rm -rf "$APP/static.new" && cp -r "$SRC/static" "$APP/static.new" && rm -rf "$APP/static.old" \
@@ -260,6 +265,11 @@ if [ -f /etc/lightdm/lightdm.conf ] && grep -Eq '^\s*autologin-user=\s*$' /etc/l
   warn "/etc/lightdm/lightdm.conf has an empty autologin-user= line that overrides ours: set it in Menu > Login Window > Users"
 fi
 
+step "Clock"
+# the Surface booted 4 hours off (a Windows-style local-time hardware clock): keep it in UTC and on NTP
+sudo timedatectl set-local-rtc 0 >/dev/null 2>&1 && sudo timedatectl set-ntp true >/dev/null 2>&1 \
+  && ok "clock: hardware clock in UTC, set from the internet" || warn "could not set the clock (timedatectl)"
+
 step "Screen stays on, no lock, no sleep"
 gs() { if gsettings writable "$1" "$2" >/dev/null 2>&1; then gsettings set "$1" "$2" "$3"; fi; }
 gs org.cinnamon.desktop.screensaver lock-enabled false
@@ -350,6 +360,11 @@ echo "Data and backups: $VB (data.json, backups/)"
 if dpkg -s rustdesk >/dev/null 2>&1; then
   [ -n "$rustdesk_id" ] && echo "RustDesk ID: $rustdesk_id"
   echo "RustDesk: open it from the menu, Settings > Security > Set permanent password, and write the ID down."
+fi
+# the steps a release says need this installer (needs_install.txt): done now, so the in-app updater may go on
+if [ -f "$SRC/needs_install.txt" ]; then
+  { cat "$VB/install-steps" 2>/dev/null; grep -v '^#' "$SRC/needs_install.txt" | awk 'NF {print $1}'; } | sort -u >"$VB/install-steps.tmp" \
+    && mv -f "$VB/install-steps.tmp" "$VB/install-steps"
 fi
 echo "Restart the Surface (or log out and in) and VoiceBox opens by itself.${NEED_RESTART:+ (Needed once for the power button.)}"
 echo "=========================================================="

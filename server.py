@@ -39,6 +39,7 @@ VENV_PY = os.path.join(KOKORO_DIR, "venv", "bin", "python3")  # one venv (made b
 KOKORO_WORKER = os.environ.get("VOICEBOX_KOKORO_WORKER") or os.path.join(APP, "kokoro_worker.py")
 PIPER_WORKER = os.environ.get("VOICEBOX_PIPER_WORKER") or os.path.join(APP, "piper_worker.py")
 SPEAK_LOG = os.path.join(HOME, "speak.log")
+DARK_FLAG = os.path.join(HOME, "screen-dark")  # powerkey.py: he darkened the screen with the power button
 POWER_DIR = os.environ.get("VOICEBOX_POWER_DIR", "/sys/class/power_supply")
 KOKORO_FILES = {"kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
                 "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"}
@@ -169,6 +170,7 @@ def backup_current(force=False):
             newest = datetime.datetime.strptime(os.path.basename(rolling[-1])[5:18], "%Y%m%d-%H%M")
         except ValueError:
             newest = None
+    # (a wall clock that jumped back only delays the next rolling backup; it never floods them away)
     if force or newest is None or now - newest >= ROLLING_EVERY:
         shutil.copy2(DATA, os.path.join(BACKUPS, now.strftime("data-%Y%m%d-%H%M%S.json")))
         rolling = sorted(glob.glob(os.path.join(BACKUPS, "data-*.json")))
@@ -273,17 +275,17 @@ NICE = ["nice", "-n", "10"]  # a command prefix: a pre-exec hook can deadlock a 
 
 def piper_wav(text, rate, voice, low=False, end=None):
     """The piper binary: reloads the model every call (seconds on the Surface). Last resort only.
-    A live request gives up at time.time() `end` (waiting for its turn included); pre-render waits."""
+    A live request gives up at time.monotonic() `end` (waiting for its turn included); pre-render waits."""
     if voice not in piper_voices() or not os.path.exists(PIPER_BIN):
         return None
-    if not piper_lock.acquire(timeout=-1 if end is None else max(0.1, end - time.time())):  # one at a time
+    if not piper_lock.acquire(timeout=-1 if end is None else max(0.1, end - time.monotonic())):  # one at a time
         return None
     try:
         r = subprocess.run(
             (NICE if low else []) + [PIPER_BIN, "-q", "-m", os.path.join(PIPER_DIR, voice + ".onnx"), "-f", "-",
                                      "--length_scale", "%.3f" % (1.0 / rate)],
             input=text.replace("\n", " ").encode(), capture_output=True,
-            timeout=30 if end is None else max(2.0, end - time.time()))
+            timeout=30 if end is None else max(2.0, end - time.monotonic()))
     except subprocess.TimeoutExpired:
         return None
     finally:
@@ -303,7 +305,7 @@ class Worker:
         self.busy = threading.Lock()  # held from the request until the worker answers (or dies)
         self.answer = None
         self.mutex = threading.Lock()
-        self.since = self.started = 0.0
+        self.since = self.started = -1e9  # monotonic: may be small right after boot
 
     def _read(self, proc):
         for line in proc.stdout:
@@ -323,17 +325,17 @@ class Worker:
         """'ok' (out written), 'busy' (another render for `queue` s), 'slow' (still running) or 'down'."""
         if not self.ready():
             return "down"
-        if self.busy.locked() and self.proc and time.time() - self.since > 120:
+        if self.busy.locked() and self.proc and time.monotonic() - self.since > 120:
             self.proc.kill()  # stuck: its reader frees the slot
         if not (self.busy.acquire(timeout=queue) if queue else self.busy.acquire(blocking=False)):
             return "busy"
         ev = threading.Event()
-        self.answer, self.since = ev, time.time()  # from here on, _finish() is the only way the slot is freed
+        self.answer, self.since = ev, time.monotonic()  # from here on, _finish() is the only way the slot is freed
         try:
             if self.proc is None or self.proc.poll() is not None:
-                if time.time() - self.started < 60:
+                if time.monotonic() - self.started < 60:
                     raise OSError("worker died less than a minute ago")  # no restart storm on a broken install
-                self.started = time.time()
+                self.started = time.monotonic()
                 self.proc = subprocess.Popen((NICE if self.low else []) + [VENV_PY, self.script, self.folder], stdin=subprocess.PIPE,
                                              stdout=subprocess.PIPE, text=True, bufsize=1)
                 threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
@@ -413,7 +415,7 @@ def prune_cache():
             pass
     for p in glob.glob(os.path.join(CACHE, "*", "*.tmp")):  # left by a killed render or a full disk
         try:
-            if time.time() - os.path.getmtime(p) > 600:
+            if time.time() - os.path.getmtime(p) > 600:  # file times are wall-clock
                 os.remove(p)
         except OSError:
             pass
@@ -452,7 +454,7 @@ def kokoro_pause(on):
 
 
 def piper_say(text, rate, voice, path, end, low=False):
-    """(wav, how) with Piper by time.time() `end`: the long-lived worker first; the binary when the
+    """(wav, how) with Piper by time.monotonic() `end`: the long-lived worker first; the binary when the
     worker is missing, busy or slow (live only: pre-render never stacks a second Piper)."""
     if low:
         return _piper_say(text, rate, voice, path, end, True)
@@ -464,7 +466,7 @@ def piper_say(text, rate, voice, path, end, low=False):
 
 
 def _piper_say(text, rate, voice, path, end, low):
-    left = lambda: end - time.time()  # noqa: E731
+    left = lambda: end - time.monotonic()  # noqa: E731
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
     except OSError:
@@ -487,13 +489,13 @@ def _piper_say(text, rate, voice, path, end, low):
     return wav, how
 
 
-LIVE_BUDGET = 17.0  # seconds; the page waits 20
+LIVE_BUDGET = 17.0  # seconds; the page waits 20. All timing here is time.monotonic(): the wall clock can jump
 
 
 def speak(text, rate, voice, wait):
     """(wav or None, how). Disk cache first (the big buttons always from the startup cache); Kokoro if
     chosen and done within `wait` s; else Piper (Ryan), all within LIVE_BUDGET."""
-    end = time.time() + LIVE_BUDGET
+    end = time.monotonic() + LIVE_BUDGET
     rate = min(max(float(rate or 1.0), 0.5), 2.0)
     voice = pick_voice(voice) or PIPER_DEFAULT  # no engine at all: the disk cache may still have it
     path = cache_path(voice, text, rate)
@@ -558,13 +560,13 @@ def wake_prerender(d):
         prep_wake.set()
 
 
-last_live = [0.0]  # time of the last tap; pre-render steps aside for it
+last_live = [-1e9]  # time.monotonic() of the last tap; pre-render steps aside for it
 live_waiting = [0]  # /speak requests in progress: pre-render pauses while any is waiting
 live_lock = threading.Lock()
 
 
 def live_busy():
-    return live_waiting[0] > 0 or time.time() - last_live[0] < 3
+    return live_waiting[0] > 0 or time.monotonic() - last_live[0] < 3
 
 
 FAST = ("en_US-ryan-medium", "en_US-joe-medium", "en_US-norman-medium")  # quick Piper voices for typing
@@ -652,7 +654,7 @@ def prerender_once():
                     prep["error"] = "The %s voice is not working; Ryan is used." % v[7:]
                     return
             else:
-                wav, how = piper_say(t, rate, v, path, time.time() + 60, low=True)
+                wav, how = piper_say(t, rate, v, path, time.monotonic() + 60, low=True)
                 if how in ("piper-busy", "piper-slow"):
                     continue  # a live request has the worker: wait and try again
                 if not wav:
@@ -705,7 +707,38 @@ VOICES_URL = os.environ.get("VOICEBOX_VOICES_URL", "https://huggingface.co/rhass
 MAX_TARBALL = 20 * 1024 * 1024
 MAX_UNPACKED = 60 * 1024 * 1024
 MAX_VOICE = 300 * 1024 * 1024
-APP_FILES = ("server.py", "kiosk.sh", "kokoro_worker.py", "piper_worker.py", "powerkey.py", "static", "voices.txt")
+# What goes into app/: EVERY top-level file and folder of the release, read from the new tarball (a fixed
+# list in the running code once skipped a new file: round 4's powerkey.py), except these.
+NOT_APP = {"tests", "screenshots", "tools", "second-opinions", "README.md", "install.sh", "uninstall.sh",
+           "bootguard.sh", "needs_install.txt", "VERSION", "__pycache__"}
+INSTALL_STEPS = os.path.join(HOME, "install-steps")  # ids of needs_install.txt lines install.sh has done
+
+
+def app_entries(root):
+    out = []
+    for n in sorted(os.listdir(root)):
+        p = os.path.join(root, n)
+        if n in NOT_APP or n.startswith(".") or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", n) \
+                or n.endswith((".new", ".old", ".tmp")) or os.path.islink(p) or not (os.path.isfile(p) or os.path.isdir(p)):
+            continue
+        out.append(n)
+    return out
+
+
+def needs_install(root):
+    """Reasons from the release's needs_install.txt ("<id> <reason>" lines) that install.sh has not done yet.
+    Such a release (new group, apt package, venv change) must not be half-installed by the updater."""
+    try:
+        with open(os.path.join(root, "needs_install.txt"), encoding="utf-8") as f:
+            steps = [l.strip().split(None, 1) for l in f if l.strip() and not l.startswith("#")]
+    except OSError:
+        return []
+    try:
+        with open(INSTALL_STEPS, encoding="utf-8") as f:
+            done = {l.strip() for l in f}
+    except OSError:
+        done = set()
+    return [(st[1] if len(st) > 1 else st[0]) for st in steps if st[0] not in done]
 REQUIRED = ("server.py", "kiosk.sh", "static/index.html", "static/app.js")
 KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 MAX_KOKORO = 400 * 1024 * 1024
@@ -826,6 +859,13 @@ def check_app(root, scratch):
     for f in REQUIRED:
         if not os.path.isfile(os.path.join(root, f)) or not os.path.getsize(os.path.join(root, f)):
             raise UpdateError("The update is missing %s, so it was not used. Nothing was changed." % f)
+    # every file kiosk.sh starts from app/ must come with it (round 4: kiosk.sh came, powerkey.py did not)
+    with open(os.path.join(root, "kiosk.sh"), encoding="utf-8", errors="replace") as f:
+        refs = set(re.findall(r"\$APPDIR/([A-Za-z0-9_.-]+)", f.read()))
+    present = set(app_entries(root))
+    for ref in sorted(refs):
+        if ref not in present:
+            raise UpdateError("The update needs %s, which is not in it, so it was not used. Nothing was changed." % ref)
     try:
         py_compile.compile(os.path.join(root, "server.py"), cfile=os.path.join(scratch, "check.pyc"), doraise=True)
     except py_compile.PyCompileError:
@@ -1001,12 +1041,13 @@ def swap_in(src, version):
     While an earlier update is still unproven (update-pending), app.prev (the last good one) is kept."""
     stage = PREV + ".new"
     keep_prev = src != PREV and pending_version() is not None and os.path.isdir(PREV)  # Undo always swaps
-    news = [os.path.join(APP, n + ".new") for n in APP_FILES] + [os.path.join(APP, "VERSION.new")]
+    names, old = app_entries(src), app_entries(APP)
+    news = [os.path.join(APP, n + ".new") for n in names] + [os.path.join(APP, "VERSION.new")]
     try:
         rm(stage)
         if not keep_prev:
             shutil.copytree(APP, stage, symlinks=True)
-        for n in APP_FILES:
+        for n in names:
             s, d = os.path.join(src, n), os.path.join(APP, n + ".new")
             rm(d)
             if os.path.isdir(s):
@@ -1029,11 +1070,10 @@ def swap_in(src, version):
             rm(PREV)
             os.rename(stage, PREV)
         write_pending(version)  # from here on a crash or a broken version rolls back by itself
-        for n in APP_FILES + ("VERSION",):
+        for n in [n for n in old if n not in names]:
+            rm(os.path.join(APP, n))  # not in the new version (e.g. undo to one without voices.txt)
+        for n in names + ["VERSION"]:
             new, cur = os.path.join(APP, n + ".new"), os.path.join(APP, n)
-            if not os.path.lexists(new):
-                rm(cur)  # not in the new version (e.g. undo to one without voices.txt)
-                continue
             if os.path.isdir(new):
                 rm(cur + ".old")
                 if os.path.lexists(cur):
@@ -1113,6 +1153,10 @@ def run_update(path):
             download(UPDATE_URL, tgz, MAX_TARBALL)
             os.mkdir(os.path.join(scratch, "x"))
             root, version = unpack(tgz, os.path.join(scratch, "x"))
+            todo = needs_install(root)
+            if todo:
+                raise UpdateError("This update needs the install line (Terminal). Ask Joe. (%s) Nothing was changed."
+                                  % "; ".join(todo))
             check_app(root, scratch)
             notes = fetch_voices(root) + fetch_packs(root)
             swap_in(root, version)
@@ -1183,6 +1227,8 @@ class Handler(SimpleHTTPRequestHandler):
                                     "size": os.path.getsize(b)} for b in list_backups()])
         if self.path == "/voices":
             return self.send_json(voice_status())
+        if self.path == "/dark":
+            return self.send_json({"dark": os.path.exists(DARK_FLAG)})
         if self.path == "/battery":
             return self.send_json(battery())
         if self.path == "/prepare":
@@ -1216,7 +1262,7 @@ class Handler(SimpleHTTPRequestHandler):
             text = str(req.get("text") or "").strip()[:1000]
             if not text:
                 return self.send_json({"error": "no text"}, 400)
-            last_live[0] = t0 = time.time()
+            last_live[0] = t0 = time.monotonic()
             with live_lock:
                 live_waiting[0] += 1
             try:  # Kokoro gets a share of the page's timeout; then Piper answers instead
@@ -1227,9 +1273,9 @@ class Handler(SimpleHTTPRequestHandler):
             finally:
                 with live_lock:
                     live_waiting[0] -= 1
-                last_live[0] = time.time()
+                last_live[0] = time.monotonic()
             log_speak("%s %6d ms %s %s chars=%d" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                   (time.time() - t0) * 1000, 200 if wav else 503, how, len(text)))
+                                                   (time.monotonic() - t0) * 1000, 200 if wav else 503, how, len(text)))
             if not wav:
                 return self.send_json({"error": "piper unavailable"}, 503)
             speak_ok.set()
@@ -1262,6 +1308,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True})
             threading.Timer(0.5, kill_browser).start()
             return
+        if self.path == "/dark/clear":  # the touch that woke the screen
+            try:
+                os.remove(DARK_FLAG)
+            except OSError:
+                pass
+            return self.send_json({"ok": True})
         if self.path == "/healthy":  # the page finished starting
             return self.send_json({"ok": True, "cleared": mark_healthy()})
         if self.path in ("/update/check", "/update/install", "/update/undo"):

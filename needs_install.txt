@@ -1,0 +1,6 @@
+# Steps a release needs the install line (Terminal) for: new groups, apt packages, venv changes.
+# One per line: "<id> <reason in plain words>". The in-app updater refuses a release with an id that
+# install.sh has not done yet on this Surface (it records ids in ~/.local/share/voicebox/install-steps),
+# and says "This update needs the install line (Terminal). Ask Joe." instead of installing half of it.
+# Ids are never reused. Nothing is listed for now: the power button (round 4) needs the "input" group,
+# which only the install line adds; until then the power button simply does nothing.

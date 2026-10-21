@@ -167,6 +167,14 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
   free) into `cache/<voice>/`, so the pre-render only makes his own phrases. Rebuild on LOKI with
   `VOICEBOX_HOME=<home with piper/ and kokoro/> python3 tools/build_voicepacks.py <out>` after changing
   default phrases or voices, upload, and commit the new `voicepacks.json`.
+- Updates: the in-app updater (and install.sh) put EVERY top-level file of the release into `app/`
+  except docs, tests, tools, screenshots and the installer files (`NOT_APP` in server.py). It refuses a
+  release whose kiosk.sh starts a file that is not in it, and a release listing a step in
+  `needs_install.txt` that install.sh has not done here ("This update needs the install line (Terminal).
+  Ask Joe."). install.sh records the steps it did in `~/.local/share/voicebox/install-steps`.
+- The touch that wakes a screen darkened with the power button presses nothing (`GET /dark`,
+  `POST /dark/clear`). All timing uses the monotonic clock; install.sh keeps the hardware clock in UTC
+  and turns on NTP (the Surface once booted 4 hours off).
 - `voices.txt`: the voices shown in Settings (friendly name | Piper path or `kokoro <voice>`); `install.sh`
   and the updater download the missing ones.
 - Speech: every answer is cached on disk in `~/.local/share/voicebox/cache/<voice>/` (up to 300 MB, oldest

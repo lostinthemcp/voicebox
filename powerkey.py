@@ -86,7 +86,7 @@ def main():
     if not fds:
         log("no power button to listen to; the power key does nothing (the screen stays on)")
         return
-    last = 0.0
+    last = -1e9
     while fds:
         ready, _, _ = select.select(list(fds), [], [])
         for fd in ready:
@@ -105,8 +105,8 @@ def main():
             fds[fd] = buf[n:]
             for off in range(0, n, EVENT.size):
                 _, _, typ, code, value = EVENT.unpack_from(buf, off)
-                if typ == EV_KEY and code == KEY_POWER and value == 0 and time.time() - last > 0.7:
-                    last = time.time()  # one release = one tap, even if the button bounces
+                if typ == EV_KEY and code == KEY_POWER and value == 0 and time.monotonic() - last > 0.7:
+                    last = time.monotonic()  # one release = one tap, even if the button bounces
                     try:
                         toggle(flag)
                     except (OSError, subprocess.TimeoutExpired) as e:
