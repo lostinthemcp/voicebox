@@ -1,6 +1,7 @@
 #!/bin/bash
 # shellcheck disable=SC2015  # ok/warn always succeed, so A && B || C is safe here
-# VoiceBox installer for Linux Mint 22.x (Cinnamon). Run ONCE with internet, as the
+# VoiceBox installer for Linux Mint 22.x (the Surface runs the Xfce edition; Cinnamon, MATE and GNOME
+# settings are handled too). Run ONCE with internet, as the
 # normal user (not root):   bash install.sh
 # Safe to run again: it skips what is already done and refreshes the app files.
 set -u
@@ -271,41 +272,36 @@ sudo timedatectl set-local-rtc 0 >/dev/null 2>&1 && sudo timedatectl set-ntp tru
   && ok "clock: hardware clock in UTC, set from the internet" || warn "could not set the clock (timedatectl)"
 
 step "Screen stays on, no lock, no sleep"
-gs() { if gsettings writable "$1" "$2" >/dev/null 2>&1; then gsettings set "$1" "$2" "$3"; fi; }
-gs org.cinnamon.desktop.screensaver lock-enabled false
-gs org.cinnamon.desktop.screensaver idle-activation-enabled false
-gs org.cinnamon.desktop.session idle-delay 0
-gs org.cinnamon.settings-daemon.plugins.power sleep-display-ac 0
-gs org.cinnamon.settings-daemon.plugins.power sleep-display-battery 0
-gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-ac-timeout 0
-gs org.cinnamon.settings-daemon.plugins.power sleep-inactive-battery-timeout 0
-gs org.cinnamon.settings-daemon.plugins.power lock-on-suspend false
-gs org.cinnamon.settings-daemon.plugins.power idle-dim-ac false
-gs org.cinnamon.settings-daemon.plugins.power idle-dim-battery false
-gs org.cinnamon.settings-daemon.plugins.power idle-brightness 100
-# closing the Type Cover or bumping the power button must never put him to sleep
-gs org.cinnamon.settings-daemon.plugins.power lid-close-ac-action "'nothing'"
-gs org.cinnamon.settings-daemon.plugins.power lid-close-battery-action "'nothing'"
-gs org.cinnamon.settings-daemon.plugins.power lid-close-suspend-with-external-monitor false
-gs org.cinnamon.settings-daemon.plugins.power button-power "'nothing'"
-gs org.cinnamon.settings-daemon.plugins.power button-suspend "'nothing'"
+# Which keys exist depends on the desktop (the real Surface had NO Cinnamon power schema: every old
+# setting silently did nothing, and closing the cover locked to the greeter). desktop_settings.sh
+# writes only keys that exist here and lists what it really set.
+# shellcheck source=desktop_settings.sh
+. "$SRC/desktop_settings.sh"
+vb_desktop_apply
+echo "  desktop: ${XDG_CURRENT_DESKTOP:-unknown}; set ${#VB_SET[@]} settings:"
+printf '    %s\n' "${VB_SET[@]}"
+if printf '%s\n' "${VB_SET[@]}" | grep -qE '^(org\.gnome\.settings-daemon\.plugins\.power|org\.cinnamon\.settings-daemon\.plugins\.power|org\.mate\.power-manager|xfconf xfce4-power-manager) '; then
+  ok "lid, idle and power-button settings for ${XDG_CURRENT_DESKTOP:-this desktop} (${#VB_SET[@]} set; lid fully applies after a restart)"
+else
+  warn "no lid/idle power settings found for desktop '${XDG_CURRENT_DESKTOP:-unknown}' (run install.sh from the desktop, not over SSH); logind still ignores the lid"
+fi
+if printf '%s\n' "${VB_SET[@]}" | grep -qE 'screensaver lock-enabled=false|/lock/enabled=false|light-locker lock-on-lid=false'; then
+  ok "screen lock off"
+else
+  warn "could not find a screen-lock setting to turn off - check that closing the cover does not lock"
+fi
 sudo mkdir -p /etc/systemd/logind.conf.d
 printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\nHandleSuspendKey=ignore\nHandlePowerKey=ignore\n' \
   | sudo tee /etc/systemd/logind.conf.d/70-voicebox.conf >/dev/null
 # strongest guard: the system itself can no longer sleep, whatever any setting says (uninstall.sh unmasks)
 sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1 \
   && ok "sleep, suspend and hibernate switched off for the whole system" || warn "could not mask the sleep targets"
-# flipping the Surface on a bed table must never turn the kiosk sideways
-gs org.cinnamon.settings-daemon.peripherals.touchscreen orientation-lock true
 # a tap on the power button turns only the screen off/on (powerkey.py reads the button: needs "input")
 if sudo usermod -aG input "$USER"; then
   ok "power button = screen off/on (works after the next restart)"; NEED_RESTART=1
 else
   warn "could not add $USER to the input group: the power button will do nothing"
 fi
-gs org.cinnamon hotcorner-layout "['expo:false:0', 'scale:false:0', 'scale:false:0', 'desktop:false:0']"
-[ "$(gsettings get org.cinnamon.desktop.screensaver lock-enabled 2>/dev/null)" = false ] \
-  && ok "lock, sleep and lid-close suspend turned off (lid setting fully applies after a restart)" || warn "could not change Cinnamon power settings (run install.sh from the desktop, not over SSH)"
 mkdir -p "$HOME/.linuxmint/mintwelcome" && touch "$HOME/.linuxmint/mintwelcome/norun.flag"
 
 step "Sound"
@@ -343,12 +339,15 @@ printf '[Desktop Entry]\nType=Application\nName=RustDesk tray (off for the Voice
 rustdesk_id="$(timeout 10 rustdesk --get-id 2>/dev/null || timeout 10 sudo -n rustdesk --get-id 2>/dev/null || true)"
 
 step "Touchscreen"
-if xinput list 2>/dev/null | grep -iqE 'touch(screen)?|elan|ipts|ithc'; then
-  ok "touchscreen found: $(xinput list --name-only 2>/dev/null | grep -iE 'touch|elan|ipts|ithc' | head -1)"
-elif sudo libinput list-devices 2>/dev/null | grep -A3 -i 'touch' | grep -q 'Capabilities:.*touch'; then
-  ok "touchscreen found (libinput)"
+# libinput says "Capabilities: touch" only for a touchscreen (a touchpad is "pointer gesture")
+ts="$(sudo libinput list-devices 2>/dev/null | awk '/^Device:/ {sub(/^Device:[ \t]*/, ""); d=$0} /^Capabilities:/ && / touch/ && !/pointer/ {print d; exit}')"
+if [ -z "$ts" ]; then
+  ts="$(xinput list --name-only 2>/dev/null | grep -iE 'touch ?screen|ipts|ithc|elan.*touch|wacom.*finger|finger' | grep -viE 'touch ?pad|pen|stylus|eraser' | head -1)"
+fi
+if [ -n "$ts" ]; then
+  ok "touchscreen found: $ts"
 else
-  warn "NO touchscreen found. On a Surface the linux-surface kernel usually fixes this:
+  warn "NO touchscreen found (a touchpad does not count). On a Surface the linux-surface kernel usually fixes this:
         https://github.com/linux-surface/linux-surface/wiki/Installation-and-Setup
         (not installed automatically - ask Joe first)"
 fi

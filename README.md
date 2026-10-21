@@ -50,14 +50,14 @@ If no voice works at all, the words are shown big on the screen with an OK butto
 3. Type the password when asked. At the end it prints a summary. Lines marked `CHECK` need a look.
 4. Restart the Surface. It logs in by itself and VoiceBox fills the screen.
 
-The installer sets up Chromium, the voices (Piper: Ryan, Ryan sharp, Norman, Joe; Kokoro: Michael, Fenrir,
+The Surface runs Linux Mint 22 (Xfce desktop). The installer sets up Chromium, the voices (Piper: Ryan, Ryan sharp, Norman, Joe; Kokoro: Michael, Fenrir,
 Puck, George), auto-login,
 keeps the screen from locking or sleeping, and turns the volume up to 100%.
 It is safe to run again, for example after copying in a newer version. Phrases and data are never touched.
 
 **Keep the Surface plugged in.** Sleep is turned off for the whole system (and the screen never dims
 or blanks), so it will run the battery down.
-Closing the Type Cover does not put it to sleep, and turning the Surface on a bed table does not turn the screen sideways.
+Closing the Type Cover does not put it to sleep or lock it, and turning the Surface on a bed table does not turn the screen sideways.
 
 **The power button:**
 - **Tap it:** only the screen goes dark. VoiceBox keeps running.
@@ -172,6 +172,9 @@ It **keeps** all data and backups in `~/.local/share/voicebox`.
   release whose kiosk.sh starts a file that is not in it, and a release listing a step in
   `needs_install.txt` that install.sh has not done here ("This update needs the install line (Terminal).
   Ask Joe."). install.sh records the steps it did in `~/.local/share/voicebox/install-steps`.
+- `desktop_settings.sh`: the no-lock / lid / no-blank settings for Xfce (xfconf), Cinnamon, MATE, GNOME
+  and light-locker; only keys that exist are written (install.sh lists them, and says CHECK if no power
+  setting was found). kiosk.sh puts them back at every login; uninstall.sh resets the same list.
 - The touch that wakes a screen darkened with the power button presses nothing (`GET /dark`,
   `POST /dark/clear`). All timing uses the monotonic clock; install.sh keeps the hardware clock in UTC
   and turns on NTP (the Surface once booted 4 hours off).

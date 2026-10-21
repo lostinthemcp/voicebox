@@ -81,6 +81,11 @@ loud_once() {
 keep_loud() { while kill -0 $$ 2>/dev/null; do loud_once; sleep "$LOUD_EVERY"; done; }  # stops if the kiosk dies hard
 keep_loud 9>&- >/dev/null 2>&1 &
 LOUD_PID=$!
+# every login: put the no-lock / lid / no-blank desktop settings back, in case something reset them
+# (cheap; only keys that exist here; see desktop_settings.sh)
+if [ -f "$APPDIR/desktop_settings.sh" ]; then
+  ( . "$APPDIR/desktop_settings.sh" && vb_desktop_apply ) 9>&- >/dev/null 2>&1 &
+fi
 # power button = screen off/on (never shutdown); if it cannot read the button it logs and quits
 rm -f "$DARK"
 python3 "$APPDIR/powerkey.py" "$DARK" 9>&- >>"$LOG" 2>&1 &

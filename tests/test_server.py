@@ -9,6 +9,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import subprocess
@@ -214,7 +215,7 @@ class ServerTest(Base):
         self.assertIn({"id": "en_US-ryan-medium", "name": "Ryan"}, [{"id": v["id"], "name": v["name"]} for v in self.req("/voices")[1]])
 
 
-APP_PY = ("server.py", "kiosk.sh", "kokoro_worker.py", "piper_worker.py", "powerkey.py")
+APP_PY = ("server.py", "kiosk.sh", "kokoro_worker.py", "piper_worker.py", "powerkey.py", "desktop_settings.sh")
 
 
 def wav_bytes(n=4800):
@@ -917,6 +918,79 @@ class PowerKeyTest(unittest.TestCase):
         subprocess.run(["bash", "-c", script], env=env, check=True)
         self.assertFalse(os.path.exists(self.flag))
         self.assertIn("xset s off -dpms s noblank", pathlib.Path(self.d, "xset.log").read_text())
+
+
+class DesktopSettingsTest(unittest.TestCase):
+    """desktop_settings.sh with a fake gsettings that has only the keys the real Surface had."""
+    SURFACE = ["org.gnome.settings-daemon.plugins.power lid-close-ac-action", "org.gnome.settings-daemon.plugins.power lid-close-battery-action",
+               "org.gnome.settings-daemon.plugins.power idle-dim", "org.gnome.settings-daemon.plugins.power idle-brightness",
+               "org.gnome.desktop.screensaver lock-enabled", "org.gnome.desktop.screensaver idle-activation-enabled",
+               "org.gnome.desktop.screensaver ubuntu-lock-on-suspend", "org.gnome.desktop.session idle-delay",
+               "apps.light-locker lock-on-suspend", "apps.light-locker lock-after-screensaver",
+               "apps.light-locker late-locking", "apps.light-locker lock-on-lid"]
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="vbdesk-")
+        self.bin = os.path.join(self.d, "bin")
+        os.makedirs(self.bin)
+        pathlib.Path(self.d, "keys").write_text("\n".join(self.SURFACE) + "\n")
+        pathlib.Path(self.bin, "gsettings").write_text(
+            '#!/bin/bash\ncase "$1" in writable) grep -qxF "$2 $3" %s/keys;; set|reset) echo "$*" >>%s/log;; *) exit 1;; esac\n' % (self.d, self.d))
+        os.chmod(os.path.join(self.bin, "gsettings"), 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def run_sh(self, fn):
+        env = dict(os.environ, HOME=self.d, PATH=self.bin + ":" + os.environ["PATH"])
+        return subprocess.run(["bash", "-c", '. "%s"; %s; printf "%%s\\n" "${VB_SET[@]}"' % (os.path.join(ROOT, "desktop_settings.sh"), fn)],
+                              env=env, capture_output=True, text=True, timeout=30).stdout
+
+    def test_surface_keys(self):
+        out = self.run_sh("vb_desktop_apply")
+        log = pathlib.Path(self.d, "log").read_text()
+        for line in ["set org.gnome.settings-daemon.plugins.power lid-close-ac-action 'nothing'",
+                     "set org.gnome.settings-daemon.plugins.power idle-dim false",
+                     "set org.gnome.desktop.screensaver lock-enabled false",
+                     "set org.gnome.desktop.screensaver ubuntu-lock-on-suspend false",
+                     "set org.gnome.desktop.session idle-delay 0",
+                     "set apps.light-locker lock-on-lid false", "set apps.light-locker lock-after-screensaver 0"]:
+            self.assertIn(line, log)
+        self.assertNotIn("cinnamon", log, "keys that do not exist are not written")
+        self.assertEqual(log.count("\nset ") + 1, len(self.SURFACE))
+        self.assertIn("Hidden=true", pathlib.Path(self.d, ".config/autostart/light-locker.desktop").read_text())
+        self.assertIn("autostart light-locker: off", out)
+        self.run_sh("vb_desktop_reset")
+        log = pathlib.Path(self.d, "log").read_text()
+        self.assertEqual(log.count("reset "), len(self.SURFACE))
+        self.assertFalse(os.path.exists(os.path.join(self.d, ".config/autostart/light-locker.desktop")))
+
+    def test_xfce_values_follow_the_xfpm_version(self):
+        pathlib.Path(self.bin, "xfconf-query").write_text('#!/bin/bash\n[ "$1" = -l ] && exit 0\necho "$*" >>%s/xfconf\n' % self.d)
+        os.chmod(os.path.join(self.bin, "xfconf-query"), 0o755)
+        for ver, lid, never in (("4.18.3", "0", "14"), ("4.20.0", "4", "0")):
+            pathlib.Path(self.bin, "xfce4-power-manager").write_text('#!/bin/bash\necho "xfce4-power-manager %s (Xfce 4.18)"\n' % ver)
+            os.chmod(os.path.join(self.bin, "xfce4-power-manager"), 0o755)
+            if os.path.exists(os.path.join(self.d, "xfconf")):
+                os.remove(os.path.join(self.d, "xfconf"))
+            out = self.run_sh("vb_desktop_apply")
+            x = pathlib.Path(self.d, "xfconf").read_text()
+            self.assertIn("-c xfce4-power-manager -p /xfce4-power-manager/lid-action-on-battery -n -t uint -s %s" % lid, x, ver)
+            self.assertIn("-p /xfce4-power-manager/inactivity-on-ac -n -t uint -s %s" % never, x, ver)
+            self.assertIn("-p /xfce4-power-manager/logind-handle-lid-switch -n -t bool -s true", x)
+            self.assertIn("-p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false", x)
+            self.assertIn("-p /xfce4-power-manager/power-button-action -n -t uint -s 0", x)
+            self.assertNotIn("xfce4-screensaver", x, "not installed: not touched")
+            self.assertIn("xfconf xfce4-power-manager /xfce4-power-manager/dpms-enabled=false", out)
+
+    def test_touchpad_is_not_a_touchscreen(self):
+        src = pathlib.Path(ROOT, "install.sh").read_text()
+        awk = re.search(r"awk '(/\^Device:/[^']*)'", src).group(1)
+        pad = "Device:           Microsoft Surface Type Cover Touchpad\nCapabilities:     pointer gesture\n\n"
+        screen = "Device:           IPTS Touch\nCapabilities:     touch\n\n"
+        run = lambda text: subprocess.run(["awk", awk], input=text, capture_output=True, text=True).stdout.strip()  # noqa: E731
+        self.assertEqual(run(pad), "")
+        self.assertEqual(run(pad + screen), "IPTS Touch")
 
 
 class InstallTest(unittest.TestCase):
