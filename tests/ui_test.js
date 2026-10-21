@@ -221,9 +221,21 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     const tab = async (name, n) => {
       await page.click(`#snav button:text-is("${name}")`);
       await page.waitForFunction((t) => document.querySelector("#sbody h2").textContent === t, name);
+      await page.waitForTimeout(300); // voices / backups lists arrive
       await sfits(name);
       assert(await page.isVisible("#sdone"), "Done not visible in " + name);
-      if (w === 1280) { await page.waitForTimeout(300); await shot(`9${n}-settings-${name.toLowerCase().replace(/[^a-z]+/g, "-")}`); }
+      // one grid: every button 64 px high, every label in the same column, every control from the same x
+      const g = await page.evaluate(() => ({
+        heights: [...new Set([...document.querySelectorAll("#sbody button.sb")].filter((b) => b.offsetParent).map((b) => Math.round(b.getBoundingClientRect().height)))],
+        labels: [...new Set([...document.querySelectorAll("#sbody .srow > .slabel")].map((l) => Math.round(l.getBoundingClientRect().left)))],
+        starts: [...new Set([...document.querySelectorAll("#sbody .srow > :nth-child(2)")].map((c) => Math.round(c.getBoundingClientRect().left)))],
+        widths: [...new Set([...document.querySelectorAll("#sbody .prow input")].map((i) => Math.round(i.getBoundingClientRect().width)))],
+      }));
+      assert.deepStrictEqual(g.heights, [64], name + ": button heights " + g.heights);
+      assert.strictEqual(g.labels.length, 1, name + ": labels not in one column " + g.labels);
+      assert.strictEqual(g.starts.length, 1, name + ": controls do not start at one x " + g.starts);
+      assert(g.widths.length <= 1, name + ": phrase boxes of different widths " + g.widths);
+      await shot(`9${n}-settings-${name.toLowerCase().replace(/[^a-z]+/g, "-")}`);
     };
     await tab("Voice & sound", "a");
     await tab("Screen", "b");
@@ -359,6 +371,36 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.waitForFunction(() => window.__spoken.includes("Yes"), null, { timeout: 5000 });
     assert(Date.now() - t0 < 3500, "YES waited too long on a hung server: " + (Date.now() - t0));
     console.log("slow voice: OK");
+    await page.close();
+  }
+  // the touch that wakes a screen darkened with the power button presses nothing; the next one works
+  {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 853 }, hasTouch: true });
+    page.on("pageerror", (e) => errors.push(String(e)));
+    let dark = true, cleared = 0;
+    await page.route("**/dark", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ dark }) }));
+    await page.route("**/dark/clear", (r) => { dark = false; cleared++; r.fulfill({ status: 200, contentType: "application/json", body: "{}" }); });
+    await page.goto(URL);
+    await page.waitForSelector(".tiles button");
+    await page.waitForTimeout(1300); // the page has polled /dark
+    const before = await page.textContent("#lastsaid");
+    await page.click("#yes");
+    await page.waitForTimeout(500);
+    assert.strictEqual(await page.textContent("#lastsaid"), before, "the waking touch pressed YES");
+    assert.strictEqual(cleared, 1, "the page did not clear the dark flag");
+    await page.click("#yes");
+    await page.waitForFunction(() => document.querySelector("#lastsaid").textContent.includes("Yes"), null, { timeout: 8000 });
+    // darkened again: the waking touch on HELP is swallowed, holding HELP again still works
+    dark = true;
+    await page.waitForTimeout(1300);
+    const hb = await page.locator("#help").boundingBox();
+    await page.mouse.move(hb.x + 20, hb.y + 20);
+    await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
+    await page.waitForTimeout(300);
+    assert(!(await page.textContent("#lastsaid")).includes("I need help"), "the waking touch started HELP");
+    await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector("#lastsaid").textContent.includes("I need help"), null, { timeout: 8000 });
+    console.log("dark screen wake: OK");
     await page.close();
   }
   // server down: YES and HELP still speak (browser voice); no voice at all: text shown huge

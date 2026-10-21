@@ -541,21 +541,36 @@ function textInput(value, onInput, placeholder = "") {
   i.onblur = () => setTimeout(() => { if (!(document.activeElement && document.activeElement.matches("#sbody input[type=text]"))) showSKeys(false); }, 100);
   return i;
 }
-function stepper(get, set, step, min, max, fmt) {
-  const v = el("span", { class: "val", text: fmt(get()) });
-  const change = (d) => { set(Math.round(Math.min(max, Math.max(min, get() + d)) * 100) / 100); v.textContent = fmt(get()); applySettings(); saveSoon(); };
-  return [el("button", { text: "−", "aria-label": "Less", onclick: () => change(-step) }), v, el("button", { text: "+", "aria-label": "More", onclick: () => change(step) })];
-}
 function slug(name) { return name.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-" + Date.now().toString(36); }
 // Settings, for the family: big section tabs on the left, one section at a time on the right.
+// The right side is one strict grid (he is recovering from a stroke; so are some of his helpers'
+// nerves): every button is 64 px high and one of three widths, every row has its label in the same
+// column and its controls starting at the same x, help text is always one muted line under its row.
 const TABS = [["voice", "Voice & sound"], ["screen", "Screen"], ["phrases", "Phrases"], ["family", "Family names"],
   ["about", "About me"], ["updates", "Updates"], ["backups", "Backups"]];
 let settingsTab = "voice";
-function srow(label, ...controls) {
-  return el("div", { class: "srow" }, el("div", { class: "slabel", text: label }), el("div", { class: "ctl" }, ...controls));
+// a button of a fixed size: "s" square 64, "m" 200, "l" 300, "fill" = its grid cell
+function sbtn(text, onclick, size = "m", cls = "") {
+  return el("button", { class: `sb ${size} ${cls}`.trim(), text, onclick });
 }
-function choice(options, get, set) {
-  return options.map(([val, text]) => el("button", { class: get() === val ? "on" : "", text, onclick: () => { set(val); saveSoon(); renderSettings(); } }));
+function srow(label, ctl, help) {
+  const c = Array.isArray(ctl) ? el("div", { class: "ctl" }, ...ctl) : ctl;
+  return el("div", { class: "srow" }, el("div", { class: "slabel", text: label }), c, ...(help ? [el("div", { class: "shelp", text: help })] : []));
+}
+function sgrid(cols, items) {
+  const g = el("div", { class: "sgridc" }, ...items);
+  g.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  return g;
+}
+function pair(options, get, set) {
+  return options.map(([val, text]) => sbtn(text, () => { set(val); saveSoon(); renderSettings(); }, "m", get() === val ? "on" : ""));
+}
+function stepper(get, set, step, min, max, fmt) {
+  const v = el("span", { class: "val", text: fmt(get()) });
+  const change = (d) => { set(Math.round(Math.min(max, Math.max(min, get() + d)) * 100) / 100); v.textContent = fmt(get()); applySettings(); saveSoon(); };
+  const minus = sbtn("−", () => change(-step), "s"), plus = sbtn("+", () => change(step), "s");
+  minus.setAttribute("aria-label", "Less"); plus.setAttribute("aria-label", "More");
+  return [minus, v, plus];
 }
 async function renderSettings() {
   const s = D.settings, body = $("#sbody"), nav = $("#snav");
@@ -573,94 +588,99 @@ async function renderSettings() {
 }
 const SECTIONS = {
   voice(body, s) {
-    const list = el("div", { class: "voices" }, el("span", { class: "small", text: "Loading voices..." }));
-    body.append(srow("Voice", list));
-    body.append(srow("", el("button", { text: "Test voice", onclick: () => play("Hello. This is my voice. Is this speed okay?") }), el("span", { id: "prep", class: "small" })));
-    body.append(srow("Voice speed", ...stepper(() => s.rate, (x) => { s.rate = x; }, 0.1, 0.5, 2, (x) => x.toFixed(1) + "x")));
-    body.append(srow("Fast voice for typing", ...choice([[true, "On"], [false, "Off"]], () => s.fastTyping !== false, (v) => { s.fastTyping = v; }),
-      el("span", { class: "small", text: "On: typed messages use Ryan (or Joe/Norman), so they come out quickly." })));
-    body.append(srow("Volume", ...stepper(() => Math.round(vol() * 100), (x) => { s.volume = x; applySettings(); }, 10, 50, 100, (x) => x + "%"),
-      el("span", { class: "small", text: "Also the slider at the top of his screen. Never below 50%." })));
+    const cards = sgrid(3, [el("div", { class: "shelp", text: "Loading voices..." })]);
+    cards.classList.add("cards");
+    const prep = el("div", { id: "prep", class: "shelp" });
+    const vrow = srow("Voice", cards);
+    vrow.append(prep);
+    body.append(vrow);
+    body.append(srow("", [sbtn("Test voice", () => play("Hello. This is my voice. Is this speed okay?"))]));
+    body.append(srow("Voice speed", stepper(() => s.rate, (x) => { s.rate = x; }, 0.1, 0.5, 2, (x) => x.toFixed(1) + "x")));
+    body.append(srow("Fast voice for typing", pair([[true, "On"], [false, "Off"]], () => s.fastTyping !== false, (v) => { s.fastTyping = v; }),
+      "On: typed messages use Ryan (or Joe/Norman), so they come out quickly."));
+    body.append(srow("Volume", stepper(() => Math.round(vol() * 100), (x) => { s.volume = x; applySettings(); }, 10, 50, 100, (x) => x + "%"),
+      "Same as the slider at the top of his screen. Never below 50%."));
     fetch("/voices").then((r) => r.json()).then((vs) => {
-      list.innerHTML = "";
-      if (!vs.length) list.append(el("span", { class: "small", text: "Piper not found - using the browser voice." }));
+      cards.innerHTML = "";
+      if (!vs.length) prep.textContent = "Piper not found - using the browser voice.";
       const ids = vs.map((v) => v.id);
       for (const v of vs) {
         const on = ids.includes(s.voice) ? s.voice === v.id : v.id === "en_US-ryan-medium";
         const st = v.total && v.ready >= v.total ? "Ready" : on ? `Preparing ${v.ready} of ${v.total}` : `${v.ready} of ${v.total} ready`;
-        list.append(el("button", { class: on ? "on voice" : "voice", onclick: () => { s.voice = v.id; saveSoon(50); renderSettings(); } },
-          el("span", { text: v.name }), el("span", { class: "vstat", text: v.total ? st : "" })));
+        cards.append(el("button", { class: on ? "sb fill on voice" : "sb fill voice", onclick: () => { s.voice = v.id; saveSoon(50); renderSettings(); } },
+          el("span", { class: "vname", text: v.name }), el("span", { class: "vstat", text: v.total ? st : "" })));
       }
-    }).catch(() => { list.textContent = "Could not list the voices."; });
+    }).catch(() => { prep.textContent = "Could not list the voices."; });
     showPrep();
   },
   screen(body, s) {
-    body.append(srow("Text size", ...stepper(() => s.textSize, (x) => { s.textSize = x; }, 0.1, 0.7, 1.6, (x) => Math.round(x * 100) + "%")));
-    body.append(srow("Big buttons on", ...choice([["left", "Left side"], ["right", "Right side"]], () => s.side, (v) => { s.side = v; applySettings(); })));
+    body.append(srow("Text size", stepper(() => s.textSize, (x) => { s.textSize = x; }, 0.1, 0.7, 1.6, (x) => Math.round(x * 100) + "%")));
+    body.append(srow("Big buttons on", pair([["left", "Left side"], ["right", "Right side"]], () => s.side, (v) => { s.side = v; applySettings(); })));
   },
   phrases(body) {
     const cat = D.categories.find((c) => c.id === settingsCat) || D.categories[0];
     if (cat) settingsCat = cat.id;
-    body.append(srow("Tile", ...D.categories.map((c) => el("button", { class: c === cat ? "on" : "", text: c.name, onclick: () => { settingsCat = c.id; renderSettings(); } }))));
+    body.append(srow("Tile", sgrid(3, D.categories.map((c) => sbtn(c.name, () => { settingsCat = c.id; renderSettings(); }, "fill", c === cat ? "on" : "")))));
     if (cat) {
-      body.append(srow("Tile name", textInput(cat.name, (v) => { cat.name = v || cat.name; saveSoon(); })));
-      body.append(srow("Picture", ...Object.keys(ICONS).map((n) => {
-        const b = el("button", { class: (cat.icon || "star") === n ? "on pic" : "pic", "aria-label": n, onclick: () => { cat.icon = n; saveSoon(); renderSettings(); } });
+      body.append(srow("Tile name", [textInput(cat.name, (v) => { cat.name = v || cat.name; saveSoon(); })]));
+      body.append(srow("Picture", sgrid(8, Object.keys(ICONS).map((n) => {
+        const b = sbtn("", () => { cat.icon = n; saveSoon(); renderSettings(); }, "fill", "pic" + ((cat.icon || "star") === n ? " on" : ""));
+        b.setAttribute("aria-label", n);
         b.append(icon(n));
         return b;
-      })));
+      }))));
       phraseEditor(body, cat, "phrase");
       const ci = D.categories.indexOf(cat);
       const moveCat = (d) => { const j = ci + d; if (j < 0 || j >= D.categories.length) return; [D.categories[ci], D.categories[j]] = [D.categories[j], D.categories[ci]]; saveSoon(); renderSettings(); };
-      body.append(srow("This tile", el("button", { text: "◀ Move earlier", onclick: () => moveCat(-1) }), el("button", { text: "Move later ▶", onclick: () => moveCat(1) }),
-        el("button", { class: "danger", text: "Delete this tile", onclick: () => {
+      body.append(srow("This tile", [sbtn("◀ Earlier", () => moveCat(-1)), sbtn("Later ▶", () => moveCat(1)),
+        sbtn("Delete tile", () => {
           if (confirm(`Delete the whole "${cat.name}" tile and its ${cat.phrases.length} phrases? (A backup is kept.)`)) {
             D.categories.splice(ci, 1); settingsCat = D.categories[0] && D.categories[0].id; saveSoon(50); renderSettings();
           }
-        } })));
+        }, "m", "danger")], "Moves the tile on his home screen, or deletes it with all its phrases."));
     }
     const newCat = textInput("", () => {}, "New tile name");
-    body.append(srow("New tile", newCat, el("button", { text: "Add tile", onclick: () => {
+    body.append(srow("New tile", el("div", { class: "addrow" }, newCat, sbtn("Add tile", () => {
       const v = newCat.value.trim(); if (!v) return;
       const c = { id: slug(v), name: v, icon: "star", phrases: [] }; D.categories.push(c); settingsCat = c.id; saveSoon(50); renderSettings();
-    } })));
+    }, "fill", "speak"))));
   },
   family(body) {
     const people = D.categories.find((c) => c.id === "people");
-    body.append(el("p", { class: "small", text: "Each name is a button on the People tile. Tap it and he says the name." }));
-    if (!people) { body.append(el("p", { text: "The People tile was deleted. Add a tile named People under Phrases." })); return; }
-    phraseEditor(body, people, "name");
+    if (!people) { body.append(srow("", [], "The People tile was deleted. Add a tile named People under Phrases.")); return; }
+    phraseEditor(body, people, "name", "Each name is a button on the People tile. Tap it and he says the name.");
   },
   about(body) {
     const about = D.categories.find((c) => c.id === "about");
-    body.append(el("p", { class: "small", text: "Facts he can say about himself (on the About Me tile), for example his name, birthday or address." }));
-    if (!about) { body.append(el("p", { text: "The About Me tile was deleted. Add a tile under Phrases." })); return; }
-    phraseEditor(body, about, "line");
+    if (!about) { body.append(srow("", [], "The About Me tile was deleted. Add a tile under Phrases.")); return; }
+    phraseEditor(body, about, "line", "Things he can say about himself (the About Me tile): his name, birthday, address.");
   },
   updates(body) {
-    const ver = el("span", { text: "..." }), when = el("span", { text: "..." });
+    const ver = el("span", { class: "sval", text: "..." }), when = el("span", { class: "sval", text: "..." });
     fetch("/version").then((r) => r.json()).then((v) => {
       ver.textContent = (v.version || "unknown").slice(0, 7);
       when.textContent = v.installed || "not known";
     }).catch(() => { ver.textContent = when.textContent = "not known"; });
-    const ustat = el("div", { id: "ustat", class: "small", text: "Needs the internet. Phrases, names and backups are never changed by an update." });
-    const ubar = el("div", { class: "ctl" });
-    ubar.append(el("button", { text: "Check for updates", onclick: async () => {
-      ustat.textContent = "Checking...";
-      try {
-        const j = await updatePost("/update/check");
-        if (!j.available) { ustat.textContent = "Up to date (version " + j.current.slice(0, 7) + ")."; return; }
-        ustat.textContent = "Update available.";
-        if (!ubar.querySelector(".install")) ubar.prepend(el("button", { class: "speak install", text: "Install update", onclick: () => runUpdate("/update/install", ustat) }));
-      } catch (e) { ustat.textContent = e.message; }
-    } }));
-    ubar.append(el("button", { text: "Undo last update", onclick: () => {
-      if (confirm("Go back to the version before the last update?")) runUpdate("/update/undo", ustat);
-    } }));
-    body.append(srow("Installed version", ver));
-    body.append(srow("Last update", when));
-    body.append(el("div", { class: "srow" }, el("div", { class: "slabel", text: "Update" }), ubar));
-    body.append(srow("", ustat));
+    const ustat = el("div", { id: "ustat", class: "shelp", text: "Needs the internet. Phrases, names and backups are never changed by an update." });
+    const install = sbtn("Install update", () => runUpdate("/update/install", ustat), "l", "speak install");
+    install.hidden = true;
+    const actions = el("div", { class: "ctl" },
+      sbtn("Check for updates", async () => {
+        ustat.textContent = "Checking...";
+        try {
+          const j = await updatePost("/update/check");
+          if (!j.available) { ustat.textContent = "Up to date (version " + j.current.slice(0, 7) + ")."; return; }
+          ustat.textContent = "Update available.";
+          install.hidden = false;
+        } catch (e) { ustat.textContent = e.message; }
+      }, "l"),
+      install,
+      sbtn("Undo last update", () => { if (confirm("Go back to the version before the last update?")) runUpdate("/update/undo", ustat); }, "l"));
+    body.append(srow("Installed version", [ver]));
+    body.append(srow("Last update", [when]));
+    const r = srow("Update", actions);
+    r.append(ustat);
+    body.append(r);
   },
   backups(body) {
     const file = el("input", { type: "file", accept: ".json,application/json", style: "display:none" });
@@ -676,56 +696,56 @@ const SECTIONS = {
       } catch (e) { toast("Import failed: " + e.message, true); }
       file.value = "";
     };
-    body.append(srow("Copy to a USB stick", el("button", { text: "Export (download)", onclick: () => {
+    body.append(srow("Copy to a USB stick", [sbtn("Export (download)", () => {
       const a = el("a", { href: URL.createObjectURL(new Blob([JSON.stringify(D, null, 1)], { type: "application/json" })),
         download: "voicebox-" + new Date().toISOString().slice(0, 10) + ".json" });
       document.body.append(a); a.click(); a.remove();
-    } }), el("span", { class: "small", text: "Saves a file to Downloads." })));
-    body.append(srow("Bring a file back", el("button", { text: "Import from file", onclick: () => file.click() }), file));
-    const blist = el("div", { class: "ctl blist" }, el("span", { class: "small", text: "Loading backups..." }));
-    body.append(srow("Go back in time", el("span", { class: "small", text: "Made by themselves every 10 minutes while in use, plus one a day. Tap one to go back to it." })));
-    body.append(el("div", { class: "srow" }, el("div", { class: "slabel" }), blist));
+    }, "l")], "Saves a file to Downloads. Copy it to the stick from there."));
+    body.append(srow("Bring a file back", [sbtn("Import from file", () => file.click(), "l"), file], "The current data is backed up first."));
+    const blist = sgrid(2, [el("div", { class: "shelp", text: "Loading backups..." })]);
+    body.append(srow("Go back in time", blist, "Made by themselves every 10 minutes while in use, plus one a day. Tap one to go back to it."));
     fetch("/backups").then((r) => r.json()).then((bs) => {
       blist.innerHTML = "";
-      if (!bs.length) blist.append(el("span", { class: "small", text: "No backups yet." }));
+      if (!bs.length) blist.append(el("div", { class: "shelp", text: "No backups yet." }));
       for (const b of bs.slice(0, 30)) {
-        blist.append(el("button", { text: "Restore " + b.time + (b.name.startsWith("daily") ? " (daily)" : ""), onclick: async () => {
+        blist.append(sbtn(b.time + (b.name.startsWith("daily") ? " (daily)" : ""), async () => {
           if (!confirm("Go back to the backup from " + b.time + "? (Today's data is backed up first.)")) return;
           await stopSaves(); // an in-flight save must not undo the restore
           const r = await fetch("/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: b.name }) });
           if (r.ok) { await reloadData(); toast("Restored " + b.time); } else toast("Restore failed", true);
-        } }));
+        }, "fill"));
       }
     }).catch(() => { blist.textContent = "Could not list backups."; });
   },
   exit(body) {
-    body.append(el("p", { text: "Closes VoiceBox and shows the normal desktop. To come back, double-tap Start VoiceBox on the desktop (or restart the Surface)." }));
-    body.append(srow("", el("button", { class: "danger big", text: "Exit to desktop", onclick: async () => {
+    body.append(srow("Leave VoiceBox", [sbtn("Exit to desktop", async () => {
       if (!confirm("Close VoiceBox and go to the desktop? Use the Start VoiceBox icon to come back.")) return;
       await saveNow();
       fetch("/exit-kiosk", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
-    } })));
+    }, "l", "danger")], "Shows the normal desktop. To come back, double-tap Start VoiceBox on the desktop (or restart the Surface)."));
   },
 };
-// one list of things (phrases of a tile, family names, about-me lines): edit in place, move, delete, add
-function phraseEditor(body, cat, what) {
-  if (!cat.phrases.length) body.append(srow("", el("span", { class: "small", text: "Nothing here yet." })));
+// one list (a tile's phrases, family names, about-me lines): number | text box | ▲ | ▼ | Delete, in columns
+function phraseEditor(body, cat, what, help) {
+  const head = srow(what === "name" ? "Names" : what === "line" ? "Lines" : "Phrases", cat.phrases.length ? [] : [el("span", { class: "sval muted", text: "Nothing here yet." })], help);
+  head.classList.add("head");
+  body.append(head);
   cat.phrases.forEach((ph, i) => {
     const move = (d) => { const j = i + d; if (j < 0 || j >= cat.phrases.length) return; [cat.phrases[i], cat.phrases[j]] = [cat.phrases[j], cat.phrases[i]]; saveSoon(); renderSettings(); };
-    body.append(el("div", { class: "srow item" }, el("div", { class: "slabel", text: String(i + 1) }), el("div", { class: "ctl" },
-      textInput(ph, (v) => { cat.phrases[i] = v; saveSoon(); }),
-      el("button", { text: "▲", "aria-label": "Move up", onclick: () => move(-1) }),
-      el("button", { text: "▼", "aria-label": "Move down", onclick: () => move(1) }),
-      el("button", { class: "danger", text: "Delete", onclick: () => { if (confirm(`Delete "${ph}"?`)) { cat.phrases.splice(i, 1); saveSoon(50); renderSettings(); } } }))));
+    const up = sbtn("▲", () => move(-1), "s"), down = sbtn("▼", () => move(1), "s");
+    up.setAttribute("aria-label", "Move up"); down.setAttribute("aria-label", "Move down");
+    body.append(el("div", { class: "srow item" }, el("div", { class: "slabel num", text: String(i + 1) }), el("div", { class: "prow" },
+      textInput(ph, (v) => { cat.phrases[i] = v; saveSoon(); }), up, down,
+      sbtn("Delete", () => { if (confirm(`Delete "${ph}"?`)) { cat.phrases.splice(i, 1); saveSoon(50); renderSettings(); } }, "fill", "danger"))));
   });
   const add = textInput("", () => {}, what === "name" ? "Type a name" : what === "line" ? "New line" : "New phrase");
   const label = what === "name" ? "Add name" : what === "line" ? "Add line" : "Add phrase";
-  body.append(srow(label, add, el("button", { class: "speak", text: label, onclick: () => {
+  body.append(el("div", { class: "srow item" }, el("div", { class: "slabel num", text: "+" }), el("div", { class: "prow add" }, add, sbtn(label, () => {
     const v = add.value.trim();
     if (!v) return;
     if (!cat.phrases.includes(v)) { cat.phrases.push(v); saveSoon(50); toast("Added " + v); }
     renderSettings();
-  } })));
+  }, "fill", "speak"))));
 }
 function renderSKeys() {
   renderKeyboard($("#skeys"), skMode, (k) => {
@@ -794,6 +814,27 @@ async function start() {
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
   $("#holdon").onclick = () => say("Hold on, give me a minute.");
   holdButton($("#help"), 1000, helpAlarm);
+  // the touch that wakes a screen darkened with the power button must not press anything
+  // (X wakes the screen and still delivers the touch): swallow that first press and its click
+  let dark = false, darkEnd = -1e9, eatClick = 0;
+  (async function pollDark() {
+    try {
+      const d = (await (await fetch("/dark")).json()).dark;
+      if (dark && !d) darkEnd = performance.now();
+      dark = d;
+    } catch (e) { /* server restarting */ }
+    setTimeout(pollDark, 1000);
+  })();
+  addEventListener("pointerdown", (e) => {
+    eatClick = 0; // a new touch is never eaten because of an old one
+    if (!dark && performance.now() - darkEnd > 600) return;
+    e.stopPropagation(); e.preventDefault();
+    dark = false; darkEnd = -1e9; eatClick = performance.now() + 1500; // that touch's own pointerup + click
+    fetch("/dark/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+  }, true);
+  for (const t of ["pointerup", "click"]) {
+    addEventListener(t, (e) => { if (performance.now() < eatClick) { e.stopPropagation(); e.preventDefault(); if (t === "click") eatClick = 0; } }, true);
+  }
   // a stray tap or a palm on the bar moves it at most 10 points toward the touch; dragging the knob
   // still goes all the way (each small step is under 10)
   $("#vol").oninput = () => {

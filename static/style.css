@@ -35,8 +35,6 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 #vol { flex: 1; min-width: 0; height: 100%; margin: 0; -webkit-appearance: none; appearance: none; background: transparent; touch-action: none; }
 #vol::-webkit-slider-runnable-track { height: 14px; background: #666; border-radius: 7px; }
 #vol::-webkit-slider-thumb { -webkit-appearance: none; width: 46px; height: 46px; margin-top: -16px; border-radius: 50%; background: var(--accent); border: 3px solid #000; }
-#sbody button.voice { display: inline-flex; flex-direction: column; align-items: center; line-height: 1.1; }
-#sbody button.voice .vstat { font-size: 0.8rem; font-weight: normal; opacity: 0.8; }
 #battery { flex: 0 0 auto; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 0.3em; font-size: 2rem; font-weight: bold; color: #fff; border: 3px solid #444; border-radius: 12px; white-space: nowrap; line-height: 1.1; }
 #battery .plug { font-size: 1.4rem; }
 #battery[hidden] { display: none; }
@@ -83,7 +81,6 @@ svg.icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-wid
 .tiles .love { border: 3px solid #ff5a78; }
 .tiles .love .icon { color: #ff5a78; }
 .head .icon { font-size: 2.4rem; color: var(--accent); align-self: center; }
-#sbody button.pic { font-size: 2rem; min-width: 3.4rem; }
 .tiles .kbd { border-color: var(--accent); color: var(--accent); }
 
 .head { display: flex; gap: var(--gap); height: 8vh; flex: 0 0 auto; align-items: stretch; }
@@ -134,27 +131,44 @@ svg.icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-wid
 #snav button.exit { margin-top: auto; background: #5a0000; border-color: #ff5a3c; color: #fff; }
 #snav button.exit.on { background: #a00000; }
 #sbody { flex: 1; min-width: 0; overflow-y: auto; padding: 1.5vh 2.5vw 3vh; font-size: 1.3rem; }
-#sbody .srow { display: grid; grid-template-columns: 13rem minmax(0, 1fr); gap: 1.2em; align-items: center; margin: 0.7em 0; }
-#sbody .srow .slabel { font-weight: 700; color: #ddd; }
-#sbody .srow.item { margin: 0.4em 0; }
-#sbody .srow.item .slabel { color: #888; text-align: right; font-weight: normal; }
-#sbody .ctl { display: flex; flex-wrap: wrap; gap: 0.6em; align-items: center; min-width: 0; }
-#sbody .voices { display: flex; flex-wrap: wrap; gap: 0.6em; }
-#sbody button.big { min-height: 4.4rem; font-size: 1.6rem; padding: 0 1.4em; }
-#sbody p { font-size: 1.35rem; max-width: 46em; }
 #skeys { flex: 0 0 34vh; height: 34vh; padding: var(--gap); border-top: 3px solid var(--accent); }
 #skeys[hidden] { display: none; }
 #skeys button { font-size: 1.6rem; }
 #sbody h2 { color: var(--accent); margin: 0.2em 0 0.6em; font-size: 1.7rem; }
-#sbody .bar { display: flex; flex-wrap: wrap; gap: 0.6em; align-items: center; margin: 0.4em 0; }
-#sbody button { min-height: 3.2rem; padding: 0 0.8em; font-size: 1.3rem; }
-#sbody button.on { background: var(--accent); color: #000; }
-#sbody button.danger { background: #5a0000; border-color: #ff5a3c; }
-#sbody input[type=text] { font: inherit; font-size: 1.4rem; padding: 0.3em 0.5em; min-height: 3.2rem; background: #111; color: #fff; border: 2px solid var(--edge); border-radius: 8px; flex: 1; min-width: 10rem; }
+/* the right side is ONE grid: label column 13rem, controls from the same x, everything 64 px high */
+#sbody { --h: 64px; --gapx: 14px; }
+#sbody .srow { display: grid; grid-template-columns: 13rem minmax(0, 1fr); column-gap: 24px; row-gap: 8px; align-items: center; margin: 0 0 22px; }
+#sbody .srow .slabel { font-weight: 700; color: #ddd; font-size: 1.35rem; align-self: start; min-height: var(--h); display: flex; align-items: center; line-height: 1.2; }
+#sbody .srow.head { margin-bottom: 8px; }
+#sbody .srow > :nth-child(2) { grid-column: 2; }
+#sbody .shelp { grid-column: 2; color: #aaa; font-size: 1.1rem; line-height: 1.35; }
+#sbody .srow.item { margin: 0 0 10px; }
+#sbody .srow.item .slabel { color: #888; justify-content: flex-end; font-weight: normal; padding-right: 0.3em; }
+#sbody .ctl { display: flex; gap: var(--gapx); align-items: center; min-width: 0; }
+#sbody .sgridc { display: grid; gap: var(--gapx); }
+#sbody button.sb { height: var(--h); min-height: var(--h); padding: 0 0.6em; font-size: 1.3rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#sbody button.sb.s { width: var(--h); flex: 0 0 var(--h); font-size: 1.8rem; padding: 0; }
+#sbody button.sb.m { width: 12.5rem; flex: 0 0 12.5rem; }
+#sbody button.sb.l { width: 18rem; flex: 0 0 18rem; }
+#sbody button.sb.fill { width: 100%; }
+#sbody button.sb[hidden] { display: none; }
+#sbody button.on { background: var(--accent); color: #000; border-color: var(--accent); }
+#sbody button.danger { background: #5a0000; border-color: #ff5a3c; color: #fff; }
+#sbody button.voice { display: flex; flex-direction: column; justify-content: center; align-items: center; line-height: 1.15; }
+#sbody button.voice .vname { font-size: 1.2rem; }
+#sbody button.voice .vstat { font-size: 0.9rem; font-weight: normal; opacity: 0.85; }
+#sbody button.pic { font-size: 2rem; padding: 0; display: flex; align-items: center; justify-content: center; }
+#sbody button.pic svg { width: 2rem; height: 2rem; flex: 0 0 auto; }
+#sbody .val, #sbody .sval { display: inline-flex; align-items: center; justify-content: center; height: var(--h); font-size: 1.5rem; }
+#sbody .val { width: 8rem; flex: 0 0 8rem; border: 2px solid #333; border-radius: 10px; }
+#sbody .sval { justify-content: flex-start; }
+#sbody .muted { color: #aaa; font-size: 1.2rem; }
+#sbody input[type=text] { font: inherit; font-size: 1.4rem; height: var(--h); padding: 0 0.6em; background: #111; color: #fff; border: 2px solid var(--edge); border-radius: 10px; width: 100%; min-width: 0; box-sizing: border-box; }
 #sbody input[type=text]:focus { border-color: var(--accent); outline: none; }
-#sbody .val { min-width: 4rem; text-align: center; font-size: 1.5rem; }
-#sbody .row { display: flex; gap: 0.5em; margin: 0.35em 0; }
-#sbody .small { color: #bbb; font-size: 1.05rem; }
+#sbody .ctl > input[type=text] { flex: 1; }
+/* phrase rows: text box | ▲ | ▼ | Delete, the same columns on every row; the add row lines up too */
+#sbody .prow { display: grid; grid-template-columns: minmax(0, 1fr) var(--h) var(--h) 9rem; gap: var(--gapx); align-items: center; }
+#sbody .prow.add, #sbody .addrow { display: grid; grid-template-columns: minmax(0, 1fr) calc(var(--h) * 2 + 9rem + var(--gapx) * 2); gap: var(--gapx); }
 
 #modal { position: fixed; top: 0; bottom: 0; left: calc(max(22vw, 230px) + 1.6vh); right: 0; /* never covers YES/NO/HELP */ background: rgba(0, 0, 0, 0.85); z-index: 20; display: flex; align-items: center; justify-content: center; }
 #modal .box { background: #111; border: 3px solid var(--accent); border-radius: 16px; padding: 3vh 3vw; width: 90%; max-height: 94vh; overflow-y: auto; }

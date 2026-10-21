@@ -214,6 +214,9 @@ class ServerTest(Base):
         self.assertIn({"id": "en_US-ryan-medium", "name": "Ryan"}, [{"id": v["id"], "name": v["name"]} for v in self.req("/voices")[1]])
 
 
+APP_PY = ("server.py", "kiosk.sh", "kokoro_worker.py", "piper_worker.py", "powerkey.py")
+
+
 def wav_bytes(n=4800):
     import wave
     b = io.BytesIO()
@@ -247,7 +250,7 @@ class UpdateTest(Base):
         super().setUp()
         self.app = os.path.join(self.home, "app")
         os.makedirs(self.app)
-        for f in ("server.py", "kiosk.sh", "kokoro_worker.py"):
+        for f in APP_PY:
             shutil.copy2(os.path.join(ROOT, f), self.app)
         shutil.copytree(os.path.join(ROOT, "static"), os.path.join(self.app, "static"))
         pathlib.Path(self.app, "VERSION").write_text(self.OLD + "\n")
@@ -270,10 +273,10 @@ class UpdateTest(Base):
 
     def make_tarball(self, change=None, extra=None):
         """A GitHub-like tarball of the repo with index.html marked; change/extra tweak it."""
-        files = {"server.py": pathlib.Path(ROOT, "server.py").read_bytes(),
-                 "kiosk.sh": pathlib.Path(ROOT, "kiosk.sh").read_bytes(),
-                 "kokoro_worker.py": pathlib.Path(ROOT, "kokoro_worker.py").read_bytes(),
-                 "voices.txt": b"# test\nFake | en_US/fake/medium/en_US-fake-medium\nBad | ../../evil\n"}
+        files = {f: pathlib.Path(ROOT, f).read_bytes() for f in APP_PY}
+        files["voices.txt"] = b"# test\nFake | en_US/fake/medium/en_US-fake-medium\nBad | ../../evil\n"
+        files["README.md"] = b"not for app/"
+        files["tests/test_x.py"] = b"not for app/"
         for f in os.listdir(os.path.join(ROOT, "static")):
             files["static/" + f] = pathlib.Path(ROOT, "static", f).read_bytes()
         files["static/index.html"] += b"<!-- v2 -->"
@@ -373,6 +376,51 @@ class UpdateTest(Base):
         self.assertEqual(self.req("/update/undo", {})[0], 400)  # nothing to undo yet
         self.assertEqual(tree(self.app), app)
         self.assertEqual(pathlib.Path(self.home, "data.json").read_bytes(), data)
+
+    def test_new_files_in_a_release_are_installed(self):
+        """The updater takes every top-level file of the NEW release (round 4 lost powerkey.py to a fixed list)."""
+        self.make_tarball({"brand_new.py": b"print('new')\n", "kiosk.sh": pathlib.Path(ROOT, "kiosk.sh").read_bytes()
+                           + b'\npython3 "$APPDIR/brand_new.py" >/dev/null 2>&1 &\n'})
+        self.start()
+        old_app = tree(self.app)
+        code, j = self.req("/update/install", {})
+        self.assertEqual(code, 200, j)
+        self.wait_exit()
+        self.assertTrue(os.path.isfile(os.path.join(self.app, "brand_new.py")))
+        self.assertTrue(os.path.isfile(os.path.join(self.app, "powerkey.py")))
+        self.assertFalse(os.path.exists(os.path.join(self.app, "README.md")), "docs stay out of app/")
+        self.assertFalse(os.path.exists(os.path.join(self.app, "tests")), "tests stay out of app/")
+        self.start()
+        self.assertEqual(self.req("/update/undo", {})[0], 200)
+        self.wait_exit()
+        self.assertEqual(tree(self.app), old_app, "undo takes the new file out again")
+
+    def test_release_missing_a_file_kiosk_needs_is_refused(self):
+        self.make_tarball({"kiosk.sh": pathlib.Path(ROOT, "kiosk.sh").read_bytes() + b'\npython3 "$APPDIR/missing.py" &\n'})
+        self.start()
+        app = tree(self.app)
+        code, j = self.req("/update/install", {})
+        self.assertEqual(code, 502)
+        self.assertIn(b"needs missing.py", j)
+        self.assertEqual(tree(self.app), app)
+        self.make_tarball({"powerkey.py": None})  # the real case: kiosk.sh starts powerkey.py
+        code, j = self.req("/update/install", {})
+        self.assertIn(b"needs powerkey.py", j)
+        self.assertEqual(tree(self.app), app)
+
+    def test_release_that_needs_the_install_line(self):
+        self.make_tarball({"needs_install.txt": b"# comment\ninput-group-1 The power button needs a new group.\n"})
+        self.start()
+        app = tree(self.app)
+        code, j = self.req("/update/install", {})
+        self.assertEqual(code, 502)
+        self.assertIn(b"This update needs the install line (Terminal). Ask Joe.", j)
+        self.assertIn(b"The power button needs a new group.", j)
+        self.assertEqual(tree(self.app), app)
+        pathlib.Path(self.home, "install-steps").write_text("input-group-1\n")  # install.sh did it
+        self.assertEqual(self.req("/update/install", {})[0], 200)
+        self.wait_exit()
+        self.assertFalse(os.path.exists(os.path.join(self.app, "needs_install.txt")))
 
     def test_update_must_load_his_data(self):
         """The test run uses a copy of the real data.json, so a version that chokes on it is refused."""
@@ -639,17 +687,28 @@ class WorkerTest(Base):
 
     def test_stuck_piper_worker_falls_back_to_the_program(self):
         self.fake_piper(60, binary=True)
+        # let the startup pre-render finish first, so the worker is idle and really gets stuck on our text
+        for _ in range(600):
+            p = self.req("/prepare")[1]
+            if p["total"] and p["done"] == p["total"]:
+                break
+            time.sleep(0.1)
         t = time.time()
         code, wav = self.req("/speak", {"text": "hi zzslow", "rate": 1}, raw=True)
         took = time.time() - t
         self.assertEqual(code, 200)
-        self.assertEqual(len(wav), 44 + 9000, "the piper program answered")
-        self.assertLess(took, 9, "within the live budget (page waits 20 s)")
-        self.assertIn("200 piper-binary after slow", pathlib.Path(self.home, "speak.log").read_text())
-        # YES is in the startup cache: instant even while the worker is stuck
+        self.assertEqual(len(wav), 44 + 9000, "the piper program answered, not the stuck worker")
+        self.assertLess(took, 20, "the page waits 20 s")
+        line = [l for l in pathlib.Path(self.home, "speak.log").read_text().splitlines() if "chars=9" in l][-1]
+        ms = int(line.split()[2])
+        self.assertIn("200 piper-binary after slow", line, "gave up on the stuck worker, then the program")
+        self.assertGreaterEqual(ms, 5500, "the worker had its ~6 s first")
+        self.assertLess(ms, 17000, "within the live budget")
+        # YES is in the startup cache: answered from disk even while the worker is stuck
         t = time.time()
         self.assertEqual(self.req("/speak", {"text": "Yes", "rate": 1}, raw=True)[0], 200)
-        self.assertLess(time.time() - t, 1)
+        self.assertLess(time.time() - t, 3)
+        self.assertIn("200 cache en_US-ryan-medium chars=3", pathlib.Path(self.home, "speak.log").read_text().splitlines()[-1])
 
     def test_nice_is_a_prefix_not_preexec_fn(self):
         src = pathlib.Path(ROOT, "server.py").read_text()
@@ -698,6 +757,15 @@ class WorkerTest(Base):
         self.assertEqual(res["r"][0], 200)
         time.sleep(0.2)
         self.assertNotEqual(state(), "T", "Kokoro goes on afterwards")
+
+    def test_dark_flag(self):
+        self.start()
+        self.assertEqual(self.req("/dark")[1], {"dark": False})
+        open(os.path.join(self.home, "screen-dark"), "w").close()  # powerkey.py darkened the screen
+        self.assertEqual(self.req("/dark")[1], {"dark": True})
+        self.assertEqual(self.req("/dark/clear", {}, {"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.req("/dark/clear", {})[0], 200)
+        self.assertEqual(self.req("/dark")[1], {"dark": False})
 
     def test_battery(self):
         power = os.path.join(self.home, "power")
