@@ -94,6 +94,25 @@ NEWVER="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo "unknown-$(date +%s)"
 # outside app/, so neither this copy nor the in-app updater replaces the thing that undoes a bad version
 cp -f "$SRC/bootguard.sh" "$VB/bootguard.sh.new" && mv -f "$VB/bootguard.sh.new" "$VB/bootguard.sh" && chmod +x "$VB/bootguard.sh" \
   || { echo "Could not copy bootguard.sh (disk full?). The app was not updated."; exit 1; }
+# the service with bootguard goes in BEFORE app/ changes: if this install stops half way (Ctrl-C,
+# closed terminal, power cut), the next start can still roll back to app.prev
+mkdir -p "$HOME/.config/systemd/user"
+cat >"$HOME/.config/systemd/user/voicebox.service" <<EOF
+[Unit]
+Description=VoiceBox speech server
+# never give up restarting: this is his voice (bootguard.sh rolls back a broken update)
+StartLimitIntervalSec=0
+
+[Service]
+ExecStartPre=-/bin/bash $VB/bootguard.sh
+ExecStart=/usr/bin/python3 $APP/server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload 2>/dev/null
 if [ -s "$APP/server.py" ]; then
   # Keep the working app as app.prev and write update-pending BEFORE touching app/: if this copy stops
   # half way, or the new version never gets healthy, bootguard.sh puts app.prev back.
@@ -186,22 +205,6 @@ server.save(d)' "$APP" && ok "family names added to the People tile" || warn "co
 fi
 
 step "Background service"
-mkdir -p "$HOME/.config/systemd/user"
-cat >"$HOME/.config/systemd/user/voicebox.service" <<EOF
-[Unit]
-Description=VoiceBox speech server
-# never give up restarting: this is his voice (bootguard.sh rolls back a broken update)
-StartLimitIntervalSec=0
-
-[Service]
-ExecStartPre=-/bin/bash $VB/bootguard.sh
-ExecStart=/usr/bin/python3 $APP/server.py
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
 systemctl --user daemon-reload && systemctl --user enable voicebox.service >/dev/null 2>&1 && systemctl --user restart voicebox.service \
   && ok "voicebox.service running" || warn "could not start voicebox.service (log out and in, then run install.sh again)"
 sleep 2
