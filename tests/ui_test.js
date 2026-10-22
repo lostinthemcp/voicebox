@@ -57,6 +57,9 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     const col = await page.$$eval("#controls button", (b) => b.map((x) => [x.id, x.getBoundingClientRect().height]));
     const hgt = Object.fromEntries(col);
     assert(hgt.yes >= Math.max(hgt.notsure, hgt.holdon, hgt.home) && hgt.no >= hgt.holdon, "YES/NO must stay biggest: " + JSON.stringify(hgt));
+    // off the keyboard: no typing box, SPEAK, backspace or CLEAR; volume and battery shown
+    for (const id of ["#msg", "#speak", "#back", "#clear"]) assert(await page.isHidden(id), id + " shown off the keyboard");
+    assert(await page.isVisible("#volbox") && await page.isVisible("#battery"), "volume/battery missing on home");
     await shot("1-home");
 
     // keyboard tile: type, prediction, physical keys, Enter = SPEAK
@@ -69,6 +72,10 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     assert(sugg.length >= 4 && sugg.every((s) => s.toLowerCase().startsWith("ne")), "prediction: " + sugg);
     await fits("keyboard");
     await shot("2-keyboard");
+    // typing: the box gets the room of volume and battery
+    assert(await page.isHidden("#volbox") && await page.isHidden("#battery"), "volume/battery shown while typing");
+    const mb = await page.locator("#msg").boundingBox();
+    assert(mb.width > w * 0.45, "typing box too narrow: " + mb.width);
     await pc('#suggest button:text-is("need")');
     await page.keyboard.type("water");
     assert.match(await page.textContent("#msg"), /^i need water$/);
@@ -168,11 +175,11 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await shot("8-star");
     await page.click('#modal button:text-is("Feelings")');
 
-    // star picker must leave YES/NO/HELP reachable
+    // star picker must leave the side buttons reachable
     await pc('.hrow .star');
     const modalBox = await page.locator("#modal").boundingBox();
-    const helpBox = await page.locator("#help").boundingBox();
-    assert(modalBox.x >= helpBox.x + helpBox.width, "star picker covers HELP");
+    const sideBox = await page.locator("#controls").boundingBox();
+    assert(modalBox.x >= sideBox.x + sideBox.width, "star picker covers the side buttons");
     await page.click("#yes"); // still works with the picker open
     await page.click('#modal button:text-is("Cancel")');
 
@@ -189,15 +196,6 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     assert.strictEqual(await page.textContent("#lastsaid"), saidBefore, "double tap picked a body part");
     await page.click("#home");
 
-    // HELP: short tap does nothing, 1 s hold fires
-    const before = await page.textContent("#lastsaid");
-    const hb = await page.locator("#help").boundingBox();
-    await page.mouse.move(hb.x + 20, hb.y + 20);
-    await page.mouse.down(); await page.waitForTimeout(300); await page.mouse.up();
-    await page.waitForTimeout(500);
-    assert.strictEqual(await page.textContent("#lastsaid"), before, "short tap fired HELP");
-    await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
-    await said("I need help");
 
     // settings: 1 s does nothing, 3 s hold opens
     const gb = await page.locator("#gear").boundingBox();
@@ -345,6 +343,8 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.reload();
     await page.waitForSelector(".tiles button");
     assert.match(await page.textContent("#msg"), /half typ/);
+    await tile("Keyboard"); // the box only shows on the keyboard screen
+    assert(await page.isVisible("#msg"), "half-typed text not shown on the keyboard");
     await page.click("#clear");
     await page.evaluate(async () => { D.settings.side = "left"; applySettings(); await saveNow(); });
 
@@ -418,20 +418,18 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     assert.strictEqual(cleared, 1, "the page did not clear the dark flag");
     await page.click("#yes");
     await page.waitForFunction(() => document.querySelector("#lastsaid").textContent.includes("Yes"), null, { timeout: 8000 });
-    // darkened again: the waking touch on HELP is swallowed, holding HELP again still works
+    // darkened again: the waking touch on NOT SURE is swallowed, the next tap speaks
     dark = true;
     await page.waitForTimeout(1300);
-    const hb = await page.locator("#help").boundingBox();
-    await page.mouse.move(hb.x + 20, hb.y + 20);
-    await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
-    await page.waitForTimeout(300);
-    assert(!(await page.textContent("#lastsaid")).includes("I need help"), "the waking touch started HELP");
-    await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
-    await page.waitForFunction(() => document.querySelector("#lastsaid").textContent.includes("I need help"), null, { timeout: 8000 });
+    await page.click("#notsure");
+    await page.waitForTimeout(500);
+    assert(!(await page.textContent("#lastsaid")).includes("not sure"), "the waking touch pressed NOT SURE");
+    await page.click("#notsure");
+    await page.waitForFunction(() => document.querySelector("#lastsaid").textContent.includes("not sure"), null, { timeout: 8000 });
     console.log("dark screen wake: OK");
     await page.close();
   }
-  // server down: YES and HELP still speak (browser voice); no voice at all: text shown huge
+  // server down: YES and NOT SURE still speak (browser voice); no voice at all: text shown huge
   {
     const page = await browser.newPage({ viewport: { width: 1280, height: 853 }, hasTouch: true });
     page.on("pageerror", (e) => errors.push(String(e)));
@@ -446,11 +444,10 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.click("#holdon"); // wired before the data loads, like YES/NO
     await page.waitForTimeout(750);
     await page.click("#yes");
-    const hb = await page.locator("#help").boundingBox();
-    await page.mouse.move(hb.x + 20, hb.y + 20);
-    await page.mouse.down(); await page.waitForTimeout(1200); await page.mouse.up();
-    await page.waitForFunction(() => window.__spoken.includes("I need help"), null, { timeout: 8000 });
-    assert.deepStrictEqual(await page.evaluate(() => window.__spoken), ["Hold on, give me a minute.", "Yes", "I need help"]);
+    await page.waitForTimeout(750);
+    await page.click("#notsure");
+    await page.waitForFunction(() => window.__spoken.includes("I'm not sure, ask me another way."), null, { timeout: 8000 });
+    assert.deepStrictEqual(await page.evaluate(() => window.__spoken), ["Hold on, give me a minute.", "Yes", "I'm not sure, ask me another way."]);
     await page.evaluate(() => { speechSynthesis.getVoices = () => []; });
     await page.waitForTimeout(750);
     await page.click("#no");
@@ -465,4 +462,4 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
   assert.deepStrictEqual(errors, [], "page errors");
   await browser.close();
   console.log("UI test passed");
-})().catch((e) => { console.error("UI test FAILED:", e.message); process.exit(1); });
+})().catch((e) => { console.error("UI test FAILED:", e.message, e.stack.split("\n").find((l) => l.includes("ui_test.js")) || ""); process.exit(1); });
