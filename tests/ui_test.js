@@ -209,7 +209,7 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.waitForSelector('#sbody button.on.voice:has(span:text-is("Ryan"))'); // friendly voice names, Ryan until the family picks
     // one section at a time, tabs on the left, Done always there, the keyboard only while typing
     const tabs = await page.$$eval("#snav button", (b) => b.map((x) => x.textContent));
-    assert.deepStrictEqual(tabs, ["Voice & sound", "Screen", "Phrases", "Family names", "About me", "Updates", "Backups", "Exit to desktop"]);
+    assert.deepStrictEqual(tabs, ["Voice & sound", "Screen", "Phrases", "Family names", "About me", "Wi-Fi", "Updates", "Backups", "Exit to desktop"]);
     assert(await page.isHidden("#skeys"), "keyboard shown with no text box in use");
     const sfits = async (where) => {
       const bad = await page.evaluate(() => [...document.querySelectorAll("#settings button")].filter((e) => {
@@ -242,6 +242,12 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await tab("Phrases", "c");
     await tab("Family names", "d");
     await tab("About me", "e");
+    // Wi-Fi (nmcli answers faked; the server side is in test_server.py)
+    await page.route("**/wifi", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ networks: [
+      { ssid: "Home Net", signal: 72, secure: true, active: true },
+      { ssid: "Neighbors 5G", signal: 35, secure: true, active: false },
+      { ssid: "Cafe", signal: 90, secure: false, active: false }] }) }));
+    await tab("Wi-Fi", "ew");
     await tab("Updates", "f");
     await tab("Backups", "g");
     await tab("Exit to desktop", "h");
@@ -256,6 +262,28 @@ const SHOTS = path.join(__dirname, "..", "screenshots");
     await page.click("#sbody button.install");
     await page.waitForFunction(() => document.querySelector("#ustat").textContent.includes("Nothing was changed"));
     await page.unroute("**/update/check"); await page.unroute("**/update/install");
+    // Wi-Fi password: typed exactly (no automatic capital), Shift for capitals, a plain failure message
+    let sent = null;
+    await page.route("**/wifi/connect", (r) => { sent = r.request().postDataJSON(); return fake(502, { error: "Wrong password, or this network needs one." })(r); });
+    await page.click('#snav button:text-is("Wi-Fi")');
+    await page.click('#sbody .srow:has(.slabel:text-is("Neighbors 5G")) button:text-is("Connect")');
+    await page.waitForSelector("#skeys:not([hidden])");
+    await page.click('#skeys button:text-is("a")');
+    await page.click('#skeys button:text-is("⇧")');
+    await page.click('#skeys button:text-is("B")');
+    await page.click('#skeys button:text-is("123")');
+    await page.click('#skeys button:text-is("1")');
+    await page.click('#skeys button:text-is("ABC")');
+    assert.strictEqual(await page.inputValue('#sbody input[placeholder="Password"]'), "aB1");
+    await sfits("Wi-Fi password");
+    await shot("9ex-settings-wifi-password");
+    await page.click('#sbody .wpass button:text-is("Connect")');
+    await page.waitForFunction(() => document.querySelector("#sbody .shelp").textContent.includes("Wrong password"));
+    assert.deepStrictEqual(sent, { ssid: "Neighbors 5G", password: "aB1" });
+    await page.click('#snav button:text-is("Family names")'); // the Shift key is only for the password
+    await page.click('#sbody input[placeholder="Type a name"]');
+    assert.strictEqual(await page.locator('#skeys button:text-is("⇧")').count(), 0);
+    await page.unroute("**/wifi"); await page.unroute("**/wifi/connect");
     const name = w === 1280 ? "Mike" : "Anna";
     await page.click('#snav button:text-is("Family names")');
     await page.click('#sbody input[placeholder="Type a name"]');

@@ -689,6 +689,81 @@ def battery():
     return {}
 
 
+# ---------- Wi-Fi (NetworkManager's nmcli; a local desktop user may change Wi-Fi without sudo) ----------
+NMCLI = os.environ.get("VOICEBOX_NMCLI", "nmcli")
+
+
+def nmcli(args, timeout):
+    """(ok, output) of nmcli; ok False with a plain reason when it is missing or hangs."""
+    try:
+        r = subprocess.run([NMCLI] + args, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return False, "This computer has no Wi-Fi manager (nmcli)."
+    except subprocess.TimeoutExpired:
+        return False, "Wi-Fi did not answer in time. Try again."
+    return r.returncode == 0, (r.stdout if r.returncode == 0 else (r.stderr or r.stdout)).strip()
+
+
+def split_terse(line):
+    """nmcli -t fields: ':' separates, '\\:' and '\\\\' are escaped."""
+    out, cur, esc = [], "", False
+    for ch in line:
+        if esc:
+            cur += ch
+            esc = False
+        elif ch == "\\":
+            esc = True
+        elif ch == ":":
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    return out + [cur]
+
+
+def wifi_list():
+    ok, out = nmcli(["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "auto"], 30)
+    if not ok:
+        return {"error": out or "Wi-Fi is not available."}
+    nets = {}
+    for line in out.splitlines():
+        f = split_terse(line)
+        if len(f) != 4 or not f[1]:
+            continue  # hidden networks have no name to show
+        try:
+            signal = int(f[2])
+        except ValueError:
+            signal = 0
+        n = {"ssid": f[1], "signal": signal, "secure": f[3] not in ("", "--"), "active": f[0].strip() == "*"}
+        old = nets.get(n["ssid"])  # one row per name: keep the connected or the strongest access point
+        if not old or (n["active"], n["signal"]) > (old["active"], old["signal"]):
+            nets[n["ssid"]] = n
+    return {"networks": sorted(nets.values(), key=lambda n: (not n["active"], -n["signal"], n["ssid"].lower()))}
+
+
+def wifi_connect(ssid, password):
+    if not isinstance(ssid, str) or not 0 < len(ssid.encode()) <= 32 or "\0" in ssid:
+        return {"error": "Pick a network first."}, 400
+    if not isinstance(password, str) or "\0" in password or (password and not 8 <= len(password) <= 63):
+        return {"error": "A Wi-Fi password is 8 to 63 characters."}, 400
+    # Without a password nmcli reuses a network saved earlier. The password is an argument for a moment
+    # (seen only by local processes on his own tablet); nmcli then keeps it in NetworkManager's store.
+    ok, out = nmcli(["device", "wifi", "connect", ssid] + (["password", password] if password else []), 60)
+    if ok:
+        return {"ok": True}, 200
+    sys.stderr.write("wifi connect failed: %s\n" % out)
+    low = out.lower()
+    if "not authorized" in low or "insufficient privileges" in low:
+        why = "This user is not allowed to change Wi-Fi. Ask Joe."
+    elif "secrets were required" in low or "802-11-wireless-security.psk" in low or "password" in low:
+        why = "Wrong password, or this network needs one."
+    elif "no network with ssid" in low:
+        why = "That network is out of range now."
+    else:
+        why = out.splitlines()[-1] if out else "It did not connect."
+    return {"error": why}, 502
+
+
 def kill_browser():
     for args in (["pkill", "-f", "voicebox-profile"], ["flatpak", "kill", "org.chromium.Chromium"]):
         try:
@@ -1231,6 +1306,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"dark": os.path.exists(DARK_FLAG)})
         if self.path == "/battery":
             return self.send_json(battery())
+        if self.path == "/wifi":
+            return self.send_json(wifi_list())
         if self.path == "/prepare":
             return self.send_json(dict(prep))
         if self.path == "/version":
@@ -1316,6 +1393,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True})
         if self.path == "/healthy":  # the page finished starting
             return self.send_json({"ok": True, "cleared": mark_healthy()})
+        if self.path == "/wifi/connect":
+            return self.send_json(*wifi_connect(req.get("ssid"), req.get("password") or ""))
         if self.path in ("/update/check", "/update/install", "/update/undo"):
             return self.send_json(*run_update(self.path))
         if self.path == "/ai":

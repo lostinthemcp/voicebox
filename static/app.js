@@ -10,6 +10,7 @@ let shown = "";           // the screen drawn last (to keep a list's scroll plac
 let painLevel = null;
 let kbMode = "abc";
 let skMode = "abc";
+let skShift = false;  // Shift on the settings keyboard, only shown for a Wi-Fi password
 let dict = [];              // starter words, most common first
 let dictRank = new Map();
 let audio = null;
@@ -258,12 +259,15 @@ const LAYOUTS = {
   abc: ["qwertyuiop", "asdfghjkl'", "zxcvbnm,"],
   "123": ["1234567890", "-/:;()$&@\"", "!#%+=*?_"],
 };
-function renderKeyboard(box, mode, onKey, onMode, withSpeak) {
+// shift: null, or { on, toggle } for a box where case matters (a Wi-Fi password)
+function renderKeyboard(box, mode, onKey, onMode, withSpeak, shift = null) {
   box.innerHTML = "";
   for (const row of LAYOUTS[mode]) {
     const r = document.createElement("div");
     r.className = "krow";
-    for (const ch of row) r.appendChild(key(ch, ch.toUpperCase(), onKey));
+    if (shift && mode === "abc" && row === LAYOUTS.abc[2]) r.appendChild(key(null, "⇧", shift.toggle, "wide" + (shift.on ? " on" : "")));
+    const up = shift && shift.on, low = shift && !shift.on; // no shift: keys show capitals, type small
+    for (const ch of row) r.appendChild(key(up ? ch.toUpperCase() : ch, low ? ch : ch.toUpperCase(), onKey));
     if (row === LAYOUTS[mode][2]) r.appendChild(key("BS", "⌫", onKey, "wide"));
     box.appendChild(r);
   }
@@ -537,7 +541,7 @@ function textInput(value, onInput, placeholder = "") {
   const i = el("input", { type: "text", inputmode: "none", placeholder });
   i.value = value;
   i.oninput = () => onInput(i.value);
-  i.onfocus = () => { settingsTarget = i; showSKeys(true); setTimeout(() => i.scrollIntoView({ block: "nearest" }), 50); };
+  i.onfocus = () => { settingsTarget = i; renderSKeys(); showSKeys(true); setTimeout(() => i.scrollIntoView({ block: "nearest" }), 50); };
   i.onblur = () => setTimeout(() => { if (!(document.activeElement && document.activeElement.matches("#sbody input[type=text]"))) showSKeys(false); }, 100);
   return i;
 }
@@ -547,7 +551,7 @@ function slug(name) { return name.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-
 // nerves): every button is 64 px high and one of three widths, every row has its label in the same
 // column and its controls starting at the same x, help text is always one muted line under its row.
 const TABS = [["voice", "Voice & sound"], ["screen", "Screen"], ["phrases", "Phrases"], ["family", "Family names"],
-  ["about", "About me"], ["updates", "Updates"], ["backups", "Backups"]];
+  ["about", "About me"], ["wifi", "Wi-Fi"], ["updates", "Updates"], ["backups", "Backups"]];
 let settingsTab = "voice";
 // a button of a fixed size: "s" square 64, "m" 200, "l" 300, "fill" = its grid cell
 function sbtn(text, onclick, size = "m", cls = "") {
@@ -655,6 +659,57 @@ const SECTIONS = {
     if (!about) { body.append(srow("", [], "The About Me tile was deleted. Add a tile under Phrases.")); return; }
     phraseEditor(body, about, "line", "Things he can say about himself (the About Me tile): his name, birthday, address.");
   },
+  wifi(body) {
+    const stat = el("div", { class: "shelp", text: "Looking for networks..." });
+    const list = el("div");
+    const look = sbtn("Look again", () => load(), "l");
+    const r = srow("Wi-Fi", [look]);
+    r.append(stat);
+    body.append(r, list);
+    const words = (n) => (n.signal >= 67 ? "Strong" : n.signal >= 40 ? "Good" : "Weak") + (n.secure ? ", locked" : ", open");
+    async function connect(n, password, row) {
+      stat.textContent = "Connecting to " + n.ssid + "...";
+      row.querySelectorAll("button").forEach((b) => (b.disabled = true));
+      try {
+        const res = await fetch("/wifi/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ssid: n.ssid, password }) });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || "It did not connect.");
+        toast("Connected to " + n.ssid);
+        load();
+      } catch (e) {
+        stat.textContent = e.message;
+        row.querySelectorAll("button").forEach((b) => (b.disabled = false));
+      }
+    }
+    function pick(n, row) {
+      list.querySelectorAll(".wpass").forEach((x) => x.remove());
+      if (!n.secure) return connect(n, "", row);
+      let pw = "";
+      const i = textInput("", (v) => (pw = v), "Password");
+      i.dataset.raw = "1";
+      i.autocomplete = "off";
+      const p = srow("Password", [i, sbtn("Connect", () => connect(n, pw, p), "m", "speak")],
+        "Type it exactly: ⇧ makes capitals, 123 has numbers. Leave it empty if this network was used here before.");
+      p.classList.add("wpass");
+      row.after(p);
+      i.focus();
+    }
+    async function load() {
+      stat.textContent = "Looking for networks...";
+      list.innerHTML = "";
+      let j;
+      try { j = await (await fetch("/wifi")).json(); } catch (e) { j = { error: "VoiceBox could not ask for networks." }; }
+      if (j.error) { stat.textContent = j.error; return; }
+      const on = j.networks.find((n) => n.active);
+      stat.textContent = on ? "Connected to " + on.ssid + "." : j.networks.length ? "Not connected. Tap a network." : "No networks found. Tap Look again.";
+      for (const n of j.networks) {
+        const row = srow(n.ssid, [el("span", { class: "sval", text: words(n) })]);
+        row.querySelector(".ctl").append(n.active ? el("span", { class: "sval", text: "Connected" }) : sbtn("Connect", () => pick(n, row), "m"));
+        list.append(row);
+      }
+    }
+    load();
+  },
   updates(body) {
     const ver = el("span", { class: "sval", text: "..." }), when = el("span", { class: "sval", text: "..." });
     fetch("/version").then((r) => r.json()).then((v) => {
@@ -748,13 +803,15 @@ function phraseEditor(body, cat, what, help) {
   }, "fill", "speak"))));
 }
 function renderSKeys() {
+  const raw = settingsTarget && settingsTarget.dataset.raw; // typed exactly as keyed, with a Shift key
   renderKeyboard($("#skeys"), skMode, (k) => {
     const i = settingsTarget;
     if (!i || !document.body.contains(i)) { toast("Tap a box first"); return; }
     if (k === "BS") i.value = i.value.slice(0, -1);
+    else if (raw) i.value += k;
     else i.value += /(^|[.?!] )$/.test(i.value) ? k.toUpperCase() : k; // names and phrases start with a capital
     i.dispatchEvent(new Event("input"));
-  }, (m) => { skMode = m; renderSKeys(); });
+  }, (m) => { skMode = m; renderSKeys(); }, false, raw ? { on: skShift, toggle: () => { skShift = !skShift; renderSKeys(); } } : null);
   // keep focus on the input so the on-screen keys don't steal it
   $("#skeys").onpointerdown = (e) => e.preventDefault();
 }
