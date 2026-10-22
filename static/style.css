@@ -8,7 +8,6 @@
   --accent: #ffd400;
   --yes: #138a2c;
   --no: #c4161c;
-  --help: #6d0000;
   --gap: 0.8vh;
 }
 * { box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
@@ -49,6 +48,12 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 #gear.warn { border-color: #ff5a3c; color: #ff5a3c; }
 #gear { width: 4.5vw; min-width: 48px; font-size: 1.8rem; background: transparent; border-color: #333; color: #888; }
 
+/* off the keyboard the top row is only volume, battery and gear, thinner, the slider using the free width */
+body:not(.typing) :is(#speak, #back, #clear, #msg) { display: none; }
+body:not(.typing) #msgrow { height: 9vh; }
+body:not(.typing) #volbox { flex: 1; }
+body.typing :is(#volbox, #battery) { display: none; }
+
 #controls { width: 22vw; min-width: 230px; display: flex; flex-direction: column; gap: var(--gap); }
 #controls > * { min-height: 0; }
 #yes, #no { flex: 2.2; font-size: 3.4rem; border: none; }
@@ -65,9 +70,6 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .hold .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255, 255, 255, 0.35); pointer-events: none; }
 .hold.holding .fill { width: 100%; transition: width var(--hold-ms, 1000ms) linear; }
 .hold .label { position: relative; pointer-events: none; }
-#help { flex: 1.3; font-size: 1.7rem; background: var(--help); border: 3px solid #ff5a3c; }
-body.alarm { animation: alarm 0.5s steps(2) 8; }
-@keyframes alarm { 50% { background: #b00000; } }
 
 main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.4vh; }
 #lastsaid { height: 3.4vh; font-size: 1.1rem; color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 0.3em; }

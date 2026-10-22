@@ -338,6 +338,8 @@ function renderPanel() {
 function renderScreen(p) {
   ignoreUntil = performance.now() + 400;
   $("#home").classList.toggle("here", screen === "home");
+  // the typing box, SPEAK, backspace and CLEAR only while typing; volume and battery give it their room
+  document.body.classList.toggle("typing", screen === "keyboard");
   if (screen === "home") return renderHome(p);
   if (screen === "keyboard") return renderKeys(p);
   if (screen === "pain") return renderPain(p);
@@ -477,33 +479,6 @@ function holdButton(el, ms, fn) {
 let actx = null;
 function unlockAudio() {
   try { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch (e) { /* none */ }
-}
-function chime() {
-  unlockAudio();
-  if (!actx) return 0;
-  const t0 = actx.currentTime + 0.05;
-  for (let rep = 0; rep < 3; rep++) {
-    [880, 1320, 880, 1320].forEach((f, i) => {
-      const o = actx.createOscillator(), g = actx.createGain();
-      o.type = "square";
-      o.frequency.value = f;
-      const s = t0 + rep * 1.0 + i * 0.2;
-      g.gain.setValueAtTime(0.0001, s);
-      g.gain.exponentialRampToValueAtTime(0.6 * Math.max(0.8, vol()), s + 0.02); // HELP: never under 80%
-      g.gain.exponentialRampToValueAtTime(0.0001, s + 0.19);
-      o.connect(g).connect(actx.destination);
-      o.start(s);
-      o.stop(s + 0.2);
-    });
-  }
-  return 3000;
-}
-function helpAlarm() {
-  document.body.classList.remove("alarm");
-  void document.body.offsetWidth;
-  document.body.classList.add("alarm");
-  const wait = chime();
-  setTimeout(() => say("I need help"), wait);
 }
 
 // ---------- settings ----------
@@ -870,7 +845,6 @@ async function start() {
   $("#no").onclick = () => say("No");
   $("#notsure").onclick = () => say("I'm not sure, ask me another way.");
   $("#holdon").onclick = () => say("Hold on, give me a minute.");
-  holdButton($("#help"), 1000, helpAlarm);
   // the touch that wakes a screen darkened with the power button must not press anything
   // (X wakes the screen and still delivers the touch): swallow that first press and its click
   let dark = false, darkEnd = -1e9, eatClick = 0;
