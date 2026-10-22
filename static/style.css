@@ -134,6 +134,7 @@ svg.icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-wid
 #skeys { flex: 0 0 34vh; height: 34vh; padding: var(--gap); border-top: 3px solid var(--accent); }
 #skeys[hidden] { display: none; }
 #skeys button { font-size: 1.6rem; }
+#skeys button.on { background: var(--accent); color: #000; border-color: var(--accent); }
 #sbody h2 { color: var(--accent); margin: 0.2em 0 0.6em; font-size: 1.7rem; }
 /* the right side is ONE grid: label column 13rem, controls from the same x, everything 64 px high */
 #sbody { --h: 64px; --gapx: 14px; }

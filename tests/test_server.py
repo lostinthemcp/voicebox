@@ -768,6 +768,38 @@ class WorkerTest(Base):
         self.assertEqual(self.req("/dark/clear", {})[0], 200)
         self.assertEqual(self.req("/dark")[1], {"dark": False})
 
+    def test_wifi(self):
+        fake = os.path.join(self.home, "nmcli")
+        args = os.path.join(self.home, "nmcli-args")
+        pathlib.Path(fake).write_text(r'''#!/bin/sh
+printf '%s\n' "$@" > "$0-args"
+if [ "$3" = "connect" ]; then
+  [ "$5" = "password" ] && [ "$6" != "Right-Pass1" ] && { echo "Error: Secrets were required, but not provided." >&2; exit 4; }
+  exit 0
+fi
+printf '%s\n' ' :Home\:Net:40:WPA2' '*:Home\:Net:72:WPA2' ' :Cafe:90:' ' ::55:WPA2' ' :Home\:Net:30:WPA2'
+''')
+        os.chmod(fake, 0o755)
+        self.extra_env = {"VOICEBOX_NMCLI": fake}
+        self.start()
+        self.assertEqual(self.req("/wifi")[1], {"networks": [
+            {"ssid": "Home:Net", "signal": 72, "secure": True, "active": True},  # escaped ':' kept, one row per name
+            {"ssid": "Cafe", "signal": 90, "secure": False, "active": False}]})  # hidden network left out
+        code, j = self.req("/wifi/connect", {"ssid": "Cafe"})
+        self.assertEqual(code, 200)
+        self.assertEqual(pathlib.Path(args).read_text().split("\n")[:4], ["device", "wifi", "connect", "Cafe"])
+        code, j = self.req("/wifi/connect", {"ssid": "Home:Net", "password": "wrong-pass"})
+        self.assertEqual(code, 502)
+        self.assertIn("Wrong password", json.loads(j)["error"])
+        self.assertEqual(self.req("/wifi/connect", {"ssid": "Home:Net", "password": "Right-Pass1"})[0], 200)
+        self.assertEqual(self.req("/wifi/connect", {"ssid": "Home:Net", "password": "short"})[0], 400)
+        self.assertEqual(self.req("/wifi/connect", {"ssid": ""})[0], 400)
+        self.assertEqual(self.req("/wifi/connect", {"ssid": "Cafe"}, {"Origin": "http://evil.example"})[0], 403)
+        self.stop()
+        self.extra_env = {"VOICEBOX_NMCLI": os.path.join(self.home, "missing")}
+        self.start()
+        self.assertIn("no Wi-Fi manager", self.req("/wifi")[1]["error"])
+
     def test_battery(self):
         power = os.path.join(self.home, "power")
         os.makedirs(os.path.join(power, "AC"))
