@@ -86,7 +86,7 @@ function fetchWav(text, voice) {
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); })
     .finally(() => { clearTimeout(t); document.body.classList.toggle("waiting", --waitingFor > 0); });
 }
-// battery, always in view next to the gear; red "PLUG IN" under 20% when not charging
+// battery next to the gear (top row off the keyboard screen); red "PLUG IN" under 20% when not charging
 async function showBattery() {
   const e = $("#battery");
   try {
@@ -917,13 +917,13 @@ async function start() {
 
   document.addEventListener("keydown", (e) => {
     if (!$("#settings").hidden || !$("#modal").hidden || e.ctrlKey || e.altKey || e.metaKey) return;
-    if (e.key === "Enter") { e.preventDefault(); say(msg, { split: true }); }
-    else if (e.key === "Backspace") { e.preventDefault(); typeKey("BS"); }
-    else if (e.key.length === 1) {
-      e.preventDefault();
-      if (screen !== "keyboard") go("keyboard"); // show the word guesses while he types
-      typeKey(e.key);
-    }
+    if (e.key !== "Enter" && e.key !== "Backspace" && e.key.length !== 1) return;
+    e.preventDefault();
+    // Off the keyboard screen the typing box is hidden: show it first, so a key never acts on text he cannot see
+    if (screen !== "keyboard") go("keyboard");
+    if (e.key === "Enter") say(msg, { split: true });
+    else if (e.key === "Backspace") typeKey("BS");
+    else typeKey(e.key);
   });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
   document.addEventListener("visibilitychange", () => { if (document.hidden) saveNow(); });
